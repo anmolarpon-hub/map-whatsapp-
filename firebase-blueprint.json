@@ -1,0 +1,28 @@
+{
+  "entities": {
+    "Business": {
+      "title": "Business",
+      "description": "Information about a business collected from Trustpilot.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique ID for the business." },
+        "name": { "type": "string", "description": "Name of the business." },
+        "website": { "type": "string", "description": "Website URL of the business." },
+        "phone": { "type": "string", "description": "Phone number of the business." },
+        "rating": { "type": "number", "description": "Average rating on Trustpilot." },
+        "reviewCount": { "type": "integer", "description": "Total number of reviews on Trustpilot." },
+        "hasWhatsApp": { "type": "boolean", "description": "Whether the phone number is active on WhatsApp." },
+        "category": { "type": "string", "description": "Category of the business." },
+        "location": { "type": "string", "description": "Location of the business." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "When the data was collected." }
+      },
+      "required": ["name", "website", "phone", "rating", "reviewCount", "category", "location"]
+    }
+  },
+  "firestore": {
+    "/businesses/{businessId}": {
+      "schema": "Business",
+      "description": "Collection of businesses collected from Trustpilot."
+    }
+  }
+}

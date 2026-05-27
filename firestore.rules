@@ -1,0 +1,59 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: businesses
+    // Document ID: auto-generated
+    // Fields:
+    //   - name: string (required)
+    //   - website: string (required)
+    //   - phone: string (required)
+    //   - rating: number (required)
+    //   - reviewCount: int (required)
+    //   - hasWhatsApp: bool (optional)
+    //   - category: string (required)
+    //   - location: string (required)
+    //   - createdAt: timestamp (optional)
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+          (request.auth.token.email == "arponchakrabortty@gmail.com" && request.auth.token.email_verified == true));
+    }
+
+    function isValidBusiness(data) {
+      return data.keys().hasAll(['name', 'website', 'phone', 'rating', 'reviewCount', 'category', 'location']) &&
+             data.name is string && data.name.size() > 0 && data.name.size() < 200 &&
+             data.website is string && data.website.size() > 0 &&
+             data.phone is string && data.phone.size() > 0 &&
+             data.rating is number && data.rating >= 0 && data.rating <= 5 &&
+             data.reviewCount is int && data.reviewCount >= 0 &&
+             data.category is string && data.category.size() > 0 &&
+             data.location is string && data.location.size() > 0;
+    }
+
+    match /businesses/{businessId} {
+      allow read: if true;
+      allow create: if isValidBusiness(request.resource.data);
+      allow update: if isValidBusiness(request.resource.data);
+      allow delete: if true;
+    }
+
+    match /users/{userId} {
+      allow read: if isAuthenticated() && (request.auth.uid == userId || isAdmin());
+      allow write: if isAdmin();
+    }
+  }
+}

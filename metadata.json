@@ -1,0 +1,8 @@
+{
+  "name": "Map Data Collect",
+  "description": "Collects business data from Trustpilot by category and location, including ratings, reviews, and WhatsApp status verification.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
