@@ -1,9 +1,6 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   Search, 
-  Play, 
-  Pause, 
-  Square, 
   Trash2, 
   ExternalLink, 
   Phone, 
@@ -11,38 +8,16 @@ import {
   MessageCircle, 
   Loader2, 
   AlertCircle,
-  Download
+  Download,
+  CheckCircle2,
+  XCircle,
+  RefreshCw,
+  LogOut,
+  Info,
+  Check,
+  Edit
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { 
-  db, 
-  auth, 
-  signInAnonymously, 
-  signOut, 
-  onAuthStateChanged, 
-  collection, 
-  doc, 
-  setDoc, 
-  onSnapshot, 
-  query, 
-  deleteDoc, 
-  User
-} from './firebase';
-
-// Simple Error Wrapper
-const ErrorWrapper = ({ children }: { children: React.ReactNode }) => {
-  return <>{children}</>;
-};
-
-const getDisplayWebsite = (url: string) => {
-  if (!url) return '';
-  try {
-    const formatted = url.startsWith('http') ? url : `https://${url}`;
-    return new URL(formatted).hostname;
-  } catch {
-    return url;
-  }
-};
 
 interface Business {
   id: string;
@@ -52,13 +27,22 @@ interface Business {
   rating: number;
   reviewCount: number;
   hasWhatsApp: boolean;
-  whatsAppStatus?: string;
-  whatsAppProfileName?: string;
-  whatsAppProfilePic?: string;
+  whatsAppStatus: 'UNVERIFIED' | 'NOT_ON_WHATSAPP' | 'ON_WHATSAPP' | 'VERIFYING';
   category: string;
   location: string;
   createdAt: string;
+  isSimulated?: boolean;
+  mapsUrl?: string;
 }
+
+const CATEGORIES = [
+  'Locksmith',
+  'Garage Door',
+  'Tree Service',
+  'Restaurant',
+  'HVAC',
+  'Kitchen Remodeling'
+];
 
 const COUNTRIES = [
   { 
@@ -87,7 +71,11 @@ const COUNTRIES = [
   },
   { 
     name: 'United Arab Emirates', 
-    cities: ['Dubai', 'Abu Dhabi', 'Sharjah', 'Al Ain', 'Ajman', 'Ras Al Khaimah', 'Fujairah'] 
+    cities: ['Dubai', 'Abu Dhabi', 'Sharjah', 'Al Ain', 'Ajman', 'Ras Al Khaimah', 'Fujairah', 'Umm Al Quwain', 'Khor Fakkan', 'Kalba', 'Dibba Al-Fujairah', 'Hatta', 'Jebel Ali', 'Ruwais', 'Zayed City'] 
+  },
+  { 
+    name: 'Germany', 
+    cities: ['Berlin', 'Munich', 'Hamburg', 'Frankfurt', 'Cologne', 'Stuttgart', 'Düsseldorf', 'Leipzig', 'Dortmund', 'Essen', 'Bremen', 'Dresden', 'Hanover', 'Nuremberg', 'Duisburg', 'Bochum', 'Wuppertal', 'Bielefeld', 'Bonn', 'Münster', 'Karlsruhe', 'Mannheim', 'Augsburg', 'Wiesbaden', 'Gelsenkirchen'] 
   },
   { 
     name: 'Saudi Arabia', 
@@ -95,29 +83,26 @@ const COUNTRIES = [
   },
 ];
 
-const AppContent = () => {
-  const [user, setUser] = useState<any>(() => {
+export default function App() {
+  const [category, setCategory] = useState(CATEGORIES[0]);
+  const [selectedCountry, setSelectedCountry] = useState(COUNTRIES[0].name);
+  const [selectedCities, setSelectedCities] = useState<string[]>([COUNTRIES[0].cities[0]]);
+  const [customCity, setCustomCity] = useState('');
+  const [isCollecting, setIsCollecting] = useState(false);
+  const [collectionProgress, setCollectionProgress] = useState<string>('');
+  const [businesses, setBusinesses] = useState<Business[]>(() => {
     try {
-      const saved = localStorage.getItem('trustpilot_collector_user');
-      return saved ? JSON.parse(saved) : null;
+      const saved = localStorage.getItem('map_data_collected_businesses');
+      return saved ? JSON.parse(saved) : [];
     } catch {
-      return null;
+      return [];
     }
   });
-  const [category, setCategory] = useState('');
-  const [selectedCountry, setSelectedCountry] = useState('');
-  const [selectedCities, setSelectedCities] = useState<string[]>([]);
-  const [isCollecting, setIsCollecting] = useState(false);
-  const [isPaused, setIsPaused] = useState(false);
-  const [businesses, setBusinesses] = useState<Business[]>([]);
-  const [loading, setLoading] = useState(false);
+  
   const [error, setError] = useState<string | null>(null);
-  const [countdown, setCountdown] = useState(0);
-  const [totalEstimatedTime, setTotalEstimatedTime] = useState(0);
-  const [showClearConfirm, setShowClearConfirm] = useState(false);
-  const [collectionProgress, setCollectionProgress] = useState<string>('');
+  const [collectionStats, setCollectionStats] = useState({ total: 0, verified: 0 });
 
-  // WhatsApp Baileys State Hook vars
+  // WhatsApp connection state
   const [wpStatus, setWpStatus] = useState<'DISCONNECTED' | 'CONNECTING' | 'QR_READY' | 'CONNECTED' | 'PAIRING_READY'>('DISCONNECTED');
   const [wpQr, setWpQr] = useState<string | null>(null);
   const [wpPairingCode, setWpPairingCode] = useState<string | null>(null);
@@ -125,44 +110,77 @@ const AppContent = () => {
   const [pairingPhone, setPairingPhone] = useState('');
   const [linkMethod, setLinkMethod] = useState<'qr' | 'code'>('qr');
   const [wpLoading, setWpLoading] = useState(false);
-  const [manualChecking, setManualChecking] = useState<string | null>(null);
+  const [isVerifyingWA, setIsVerifyingWA] = useState(false);
 
-  const timerRef = useRef<NodeJS.Timeout | null>(null);
-  const isPausedRef = useRef(isPaused);
-  const isCollectingRef = useRef(isCollecting);
+  // Inline B2B card editing state
+  const [editingBizId, setEditingBizId] = useState<string | null>(null);
+  const [editName, setEditName] = useState('');
+  const [editPhone, setEditPhone] = useState('');
+  const [editWebsite, setEditWebsite] = useState('');
+  const [editLocation, setEditLocation] = useState('');
 
-  // Poll WhatsApp Session state
+  const startEditing = (biz: Business) => {
+    setEditingBizId(biz.id);
+    setEditName(biz.name);
+    setEditPhone(biz.phone);
+    setEditWebsite(biz.website);
+    setEditLocation(biz.location);
+  };
+
+  const saveEdit = (id: string) => {
+    setBusinesses(prev => prev.map(b => {
+      if (b.id === id) {
+        return {
+          ...b,
+          name: editName,
+          phone: editPhone,
+          website: editWebsite,
+          location: editLocation,
+          whatsAppStatus: 'UNVERIFIED' // Reset status so they can verify again if number updated!
+        };
+      }
+      return b;
+    }));
+    setEditingBizId(null);
+  };
+
+  // Auto-update stats
   useEffect(() => {
-    let interval: any = null;
-    const updateStatus = async () => {
+    const verifiedCount = businesses.filter(b => b.whatsAppStatus === 'ON_WHATSAPP').length;
+    setCollectionStats({
+      total: businesses.length,
+      verified: verifiedCount
+    });
+    localStorage.setItem('map_data_collected_businesses', JSON.stringify(businesses));
+  }, [businesses]);
+
+  // Sync cities dropdown when country changes
+  useEffect(() => {
+    const match = COUNTRIES.find(c => c.name === selectedCountry);
+    if (match && match.cities.length > 0) {
+      setSelectedCities([match.cities[0]]);
+    }
+  }, [selectedCountry]);
+
+  // Poll WhatsApp server status periodically
+  useEffect(() => {
+    const fetchStatus = async () => {
       try {
-        const res = await fetch("/api/whatsapp/status").then(r => r.json());
-        setWpStatus(res.status);
-        if (res.qrCode) {
-          setWpQr(res.qrCode);
-        } else {
-          setWpQr(null);
-        }
-        if (res.pairingCode) {
-          setWpPairingCode(res.pairingCode);
-        } else {
-          setWpPairingCode(null);
-        }
-        if (res.error) {
-          setWpError(res.error);
-        } else {
-          setWpError(null);
-        }
+        const res = await fetch("/api/whatsapp/status");
+        if (!res.ok) throw new Error("Status API error");
+        const data = await res.json();
+        setWpStatus(data.status);
+        setWpQr(data.qrCode);
+        setWpPairingCode(data.pairingCode);
+        setWpError(data.error);
       } catch (err) {
         console.warn("Could not retrieve WhatsApp connection status", err);
       }
     };
-    
-    updateStatus();
-    interval = setInterval(updateStatus, 3000);
-    return () => {
-      if (interval) clearInterval(interval);
-    };
+
+    fetchStatus();
+    const interval = setInterval(fetchStatus, 3000);
+    return () => clearInterval(interval);
   }, []);
 
   const handleWpStart = async (phoneStr?: string) => {
@@ -173,18 +191,13 @@ const AppContent = () => {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ phone: phoneStr || undefined })
-      }).then(r => r.json());
-
-      if (res.success) {
-        // immediately poll once
-        const check = await fetch("/api/whatsapp/status").then(r => r.json());
-        setWpStatus(check.status);
-        if (check.qrCode) setWpQr(check.qrCode);
-        if (check.pairingCode) setWpPairingCode(check.pairingCode);
-        if (check.error) setWpError(check.error);
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || "Failed to start WhatsApp link.");
       }
-    } catch (err) {
-      console.error("Failed to start WhatsApp link:", err);
+    } catch (err: any) {
+      setWpError(err.message || "Could not spin up link channel.");
     } finally {
       setWpLoading(false);
     }
@@ -193,1086 +206,906 @@ const AppContent = () => {
   const handleWpLogout = async () => {
     setWpLoading(true);
     try {
-      const res = await fetch("/api/whatsapp/logout", { method: "POST" }).then(r => r.json());
-      if (res.success) {
-        setWpStatus('DISCONNECTED');
-        setWpQr(null);
-        setWpPairingCode(null);
-        setWpError(null);
-      }
+      await fetch("/api/whatsapp/logout", { method: "POST" });
+      setWpStatus('DISCONNECTED');
+      setWpQr(null);
+      setWpPairingCode(null);
     } catch (err) {
-      console.error("Failed to terminate WhatsApp session:", err);
+      console.error("Logout error:", err);
     } finally {
       setWpLoading(false);
     }
   };
 
-  const checkBusinessWhatsAppLive = async (id: string, phone: string) => {
-    setManualChecking(id);
-    try {
-      const res = await fetch("/api/whatsapp/check", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ phone }),
-      }).then(r => r.json());
-
-      if (res.success) {
-        const originalBiz = businesses.find(b => b.id === id);
-        if (originalBiz) {
-          await setDoc(doc(db, 'businesses', id), {
-            ...originalBiz,
-            hasWhatsApp: res.exists,
-            whatsAppStatus: res.exists ? 'Live WhatsApp Confirmed ✓' : 'No active WhatsApp account',
-            whatsAppProfileName: originalBiz.name,
-            whatsAppProfilePic: null,
-          });
-        }
-      } else {
-        alert(res.error || "Failed to check WhatsApp. Confirm device is linked and scanning has occurred.");
-      }
-    } catch (err: any) {
-      console.error("Live lookup failed:", err);
-      alert("Failed to communicate with WhatsApp validation endpoint.");
-    } finally {
-      setManualChecking(null);
-    }
-  };
-
-  useEffect(() => {
-    isPausedRef.current = isPaused;
-  }, [isPaused]);
-
-  useEffect(() => {
-    isCollectingRef.current = isCollecting;
-  }, [isCollecting]);
-
-  useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (u) => {
-      if (u) {
-        setUser(u);
-      }
-    });
-    return () => unsubscribe();
-  }, []);
-
-  useEffect(() => {
-    if (user) {
-      const q = query(collection(db, 'businesses'));
-      const unsubscribe = onSnapshot(q, (snapshot) => {
-        const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Business));
-        setBusinesses(data.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()));
-      }, (err) => {
-        console.error("Firestore error:", err);
-        setError("Failed to sync with database.");
-      });
-      return () => unsubscribe();
-    }
-  }, [user]);
-
-  const handleLogin = async () => {
-    try {
-      const guestUser = {
-        uid: "guest_session",
-        displayName: "Workspace Guest",
-        email: "guest@workspace.local"
-      };
-      localStorage.setItem('trustpilot_collector_user', JSON.stringify(guestUser));
-      setUser(guestUser);
-      setError(null);
-      
-      try {
-        await signInAnonymously(auth);
-      } catch (authErr) {
-        console.warn("Background Anonymous login disabled/restricted in Firebase Console:", authErr);
-      }
-    } catch (err) {
-      console.error("Login error:", err);
-      setError("Failed to enter dashboard. Please try again.");
-    }
-  };
-
-  const handleLogout = async () => {
-    try {
-      localStorage.removeItem('trustpilot_collector_user');
-      setUser(null);
-      setBusinesses([]);
-      try {
-        await signOut(auth);
-      } catch (authErr) {
-        console.warn("Background FirebaseAuth signout failed silently:", authErr);
-      }
-    } catch (err) {
-      console.error("Logout error:", err);
-    }
-  };
-
-  const startCollection = async () => {
-    if (!category || !selectedCountry || selectedCities.length === 0) {
-      setError("Please enter category, select a country, and at least one city.");
+  // Launch Gemini-based Business search
+  const triggerCollection = async () => {
+    if (!customCity && selectedCities.length === 0) {
+      setError("Please select at least one city or enter a custom city.");
       return;
     }
 
     setIsCollecting(true);
-    isCollectingRef.current = true;
-    setIsPaused(false);
-    isPausedRef.current = false;
-    setLoading(true);
     setError(null);
-    setCollectionProgress("Initializing collection...");
 
-    const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
-
-    // Determine runs: if 1 city, run 4 variations with search suffixes to fetch 150-200.
-    // If multi cities, run each city as a separate query.
-    const runs = selectedCities.length === 1 ? [
-      { city: selectedCities[0], querySuffix: "" },
-      { city: selectedCities[0], querySuffix: "best" },
-      { city: selectedCities[0], querySuffix: "top rated" },
-      { city: selectedCities[0], querySuffix: "local" }
-    ] : selectedCities.map(c => ({ city: c, querySuffix: "" }));
-
-    // Dynamic countdown: 45s per run
-    const estimatedTime = runs.length * 45;
-    setCountdown(estimatedTime);
-    setTotalEstimatedTime(estimatedTime);
-
-    if (timerRef.current) clearInterval(timerRef.current);
-    timerRef.current = setInterval(() => {
-      setCountdown((prev) => (prev > 0 ? prev - 1 : 0));
-    }, 1000);
+    const locationsToCollect = customCity.trim() 
+      ? [`${customCity.trim()}, ${selectedCountry}`] 
+      : selectedCities.map(city => `${city}, ${selectedCountry}`);
 
     try {
-      let totalDiscoveredCount = 0;
-
-      for (let runIdx = 0; runIdx < runs.length; runIdx++) {
-        // Check if stopped
-        if (!isCollectingRef.current) break;
-
-        // Check if paused
-        while (isPausedRef.current) {
-          setCollectionProgress("Collection paused...");
-          await sleep(500);
-          if (!isCollectingRef.current) break;
-        }
-        if (!isCollectingRef.current) break;
-
-        const run = runs[runIdx];
-        setCollectionProgress(`[Run ${runIdx + 1}/${runs.length}] Discovering businesses in ${run.city} ${run.querySuffix ? `(${run.querySuffix})` : ''}...`);
-
-        const locationsStr = `${run.city} ${run.querySuffix}`.trim() + ` in ${selectedCountry}`;
-
-        const prompt = `Find AS MANY businesses AS POSSIBLE (up to 40) in the category "${category}" located in "${locationsStr}" from Trustpilot directory pages, category listings, and search results.
+      let accumulatedBusinesses: any[] = [];
+      
+      for (const loc of locationsToCollect) {
+        setCollectionProgress(`Searching for ${category} in ${loc}...`);
         
-        GOAL: Provide a comprehensive and exhaustive list of unique business details. Do not stop at just a few results. Aim for maximum volume per city.
-
-        Only return businesses that have phone numbers.
-
-        CRITICAL PHONE FORMAT REQUIREMENT:
-        You MUST normalize all phone numbers to include the correct country calling code in E.164 format with the plus sign (e.g. starting with "+").
-        Country being searched: "${selectedCountry}".
-        Ensure that the phone number is formatted according to this country pattern:
-        - Bangladesh: Starts with "+880" (e.g., +88017XXXXXXXX)
-        - United Kingdom: Starts with "+44" (e.g., +447XXXXXXXXX)
-        - United States: Starts with "+1" (e.g., +1XXXXXXXXXX)
-        - Canada: Starts with "+1" (e.g., +1XXXXXXXXXX)
-        - Australia: Starts with "+61" (e.g., +61XXXXXXXXX)
-        - United Arab Emirates: Starts with "+971" (e.g., +971XXXXXXXXX)
-        - Saudi Arabia: Starts with "+966" (e.g., +966XXXXXXXXX)
-
-        Never leave out the country code prefix. Convert local formats (e.g., local UK "07700 900077" or local Bangladesh "01712-345678") to international E.164 format. Ensure you remove extra spaces and hyphens or local zero prefixes when prepending the country code if required by that country's dialling plan.
-        
-        Return the data as a JSON array of objects with the following keys:
-        name, website, phone, rating, reviewCount.`;
-
-        const responseData = await fetch("/api/gemini/discover", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ category, locationsStr, selectedCountry }),
-        }).then(async r => {
-          if (r.status === 429) {
-            throw new Error("You exceeded your current Gemini API quota. Please check your plan or try again in a minute.");
-          }
-          if (!r.ok) {
-            const rawText = await r.text().catch(() => "");
-            throw new Error(rawText || `Discovery HTTP error status: ${r.status}`);
-          }
-          return r.json();
-        });
-
-        if (!responseData || !responseData.text) {
-          continue;
-        }
-
-        let jsonText = responseData.text.trim();
-        if (jsonText.includes("```")) {
-          const match = jsonText.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
-          if (match && match[1]) {
-            jsonText = match[1].trim();
-          }
-        }
-
-        let businessesData: any[] = [];
         try {
-          businessesData = JSON.parse(jsonText);
-        } catch (parseErr) {
-          console.warn("Failed to parse JSON, fixing truncated structure:", parseErr);
-          try {
-            if (jsonText.startsWith("[") && !jsonText.endsWith("]")) {
-              const lastCompleteIndex = jsonText.lastIndexOf("}");
-              if (lastCompleteIndex !== -1) {
-                jsonText = jsonText.substring(0, lastCompleteIndex + 1) + "]";
-                businessesData = JSON.parse(jsonText);
-              }
-            }
-          } catch (fixErr) {
-            console.error("Critical fix failed:", fixErr);
-          }
-        }
-
-        if (businessesData.length === 0) {
-          continue;
-        }
-
-        // Deduplicate against state and locally accumulated leads
-        const uniqueNewBusinesses = businessesData.filter((newB: any) => {
-          if (!newB.name || !newB.phone) return false;
-          const normNewPhone = newB.phone.replace(/\D/g, '');
-          if (!normNewPhone) return false;
-
-          const duplicateInState = businesses.some(b => {
-            const normBPhone = b.phone ? b.phone.replace(/\D/g, '') : '';
-            return b.name.toLowerCase() === newB.name.toLowerCase() || (normBPhone && normBPhone === normNewPhone);
+          const response = await fetch("/api/collect", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ category, location: loc })
           });
-          return !duplicateInState;
+          
+          const contentType = response.headers.get("content-type");
+          if (!contentType || !contentType.includes("application/json")) {
+            const rawText = await response.text();
+            throw new Error(`Server returned non-JSON response (Status ${response.status}): ${rawText.slice(0, 150)}...`);
+          }
+
+          const data = await response.json();
+          if (response.ok && data.businesses && data.businesses.length > 0) {
+            accumulatedBusinesses = [...accumulatedBusinesses, ...data.businesses];
+          } else {
+            console.warn(`No results or error for ${loc}:`, data ? data.error : "Unknown");
+          }
+        } catch (err) {
+          console.error(`Error collecting businesses for ${loc}:`, err);
+        }
+      }
+
+      if (accumulatedBusinesses.length > 0) {
+        // Prevent duplicate phone/name pairs
+        setBusinesses(prev => {
+          const unique = [...prev];
+          accumulatedBusinesses.forEach(item => {
+            if (!unique.some(u => u.name.toLowerCase() === item.name.toLowerCase() && u.phone === item.phone)) {
+              unique.push(item);
+            }
+          });
+          return unique;
         });
-
-        if (uniqueNewBusinesses.length === 0) {
-          continue;
-        }
-
-        // Store them with status "Pending Verification" so the user can see them streaming real-time in UI
-        const savedBatch: Business[] = [];
-        for (const b of uniqueNewBusinesses) {
-          const docId = `${b.name.replace(/\s+/g, '-').toLowerCase()}-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
-          const initialBiz: Business = {
-            id: docId,
-            name: b.name,
-            website: b.website,
-            phone: b.phone,
-            rating: b.rating || 4.2,
-            reviewCount: b.reviewCount || 10,
-            hasWhatsApp: false,
-            whatsAppStatus: 'Pending Verification',
-            category,
-            location: `${run.city} (${selectedCountry})`,
-            createdAt: new Date().toISOString(),
-          };
-
-          await setDoc(doc(db, 'businesses', docId), initialBiz);
-          savedBatch.push(initialBiz);
-        }
-
-        totalDiscoveredCount += savedBatch.length;
-
-        // Perform validation in chunks of 4 to maximize API tool capability without hallucination
-        for (let i = 0; i < savedBatch.length; i += 4) {
-          if (!isCollectingRef.current) break;
-          while (isPausedRef.current) {
-            setCollectionProgress("Collection paused...");
-            await sleep(500);
-            if (!isCollectingRef.current) break;
-          }
-          if (!isCollectingRef.current) break;
-
-          const chunk = savedBatch.slice(i, i + 4);
-
-          // Check if live WhatsApp is connected via Baileys to verify instantly and completely
-          let checkedViaBaileys = false;
-          try {
-            const statusRes = await fetch("/api/whatsapp/status").then(r => r.json());
-            if (statusRes.status === "CONNECTED") {
-              setCollectionProgress(`[Run ${runIdx + 1}/${runs.length}] Live WhatsApp checking (${i + chunk.length}/${savedBatch.length})...`);
-              for (const b of chunk) {
-                try {
-                  const checkRes = await fetch("/api/whatsapp/check", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ phone: b.phone })
-                  }).then(r => r.json());
-
-                  if (checkRes.success) {
-                    await setDoc(doc(db, 'businesses', b.id), {
-                      ...b,
-                      hasWhatsApp: checkRes.exists,
-                      whatsAppStatus: checkRes.exists ? 'Live WhatsApp Confirmed ✓' : 'No active WhatsApp account',
-                      whatsAppProfileName: b.name,
-                      whatsAppProfilePic: null,
-                    });
-                  }
-                } catch (err) {
-                  console.warn("Baileys direct check failed for phone:", b.phone, err);
-                }
-              }
-              checkedViaBaileys = true;
-            }
-          } catch (e) {
-            console.warn("Failed to contact WhatsApp validator service:", e);
-          }
-
-          if (checkedViaBaileys) {
-            continue;
-          }
-
-          setCollectionProgress(`[Run ${runIdx + 1}/${runs.length}] Verifying WhatsApp for ${run.city} leads (${i + chunk.length}/${savedBatch.length})...`);
-
-          const verifyPrompt = `You are an elite WhatsApp Presence Intelligence Model.
-          Your task is to verify with absolute 100% precision if the following business phone numbers are active on WhatsApp.
-
-          Businesses to verify:
-          ${chunk.map((b, idx) => `${idx + 1}. Name: "${b.name}", Phone: "${b.phone}", Website: "${b.website}"`).join('\n')}
-
-          STRICT VERIFICATION CRITERIA FOR COUNTRY "${selectedCountry}":
-          1. Mobile Prefix Check (Highly strict):
-             - Bangladesh (+880): ONLY numbers starting with +8801 (mobile) should easily be classified as having WhatsApp. If it starts with a landline code (like +8802, etc.), set hasWhatsApp to false unless explicit "wa.me/" links or active chat widgets are identified on their official website.
-             - United Kingdom (+44): ONLY numbers starting with +447 (mobile) are highly likely. If it starts with +441, +442, +443, +448, or +4420 (landlines, freephone), set hasWhatsApp to false unless verifiable evidence of a WhatsApp Business line is discovered on their webpage.
-             - Australia (+61): ONLY numbers starting with +614 (mobile) are highly likely. Landlines (+612, +613, +617, +618) must be rejected unless there's an explicit "wa.me/" link on their website.
-             - UAE (+971): ONLY numbers starting with +9715 (mobile) are likely. Others must be verified on website.
-             - Saudi Arabia (+966): ONLY mobile numbers starting with +9665 are likely.
-             - US and Canada (+1): Since mobile and landline share area codes, DO NOT assume. Search the website for "wa.me", "api.whatsapp.com", or explicit mention of "WhatsApp us" to set hasWhatsApp to true.
-
-          2. Official Resource Verification: Use Google Search or official website scanning to detect presence of "wa.me/" links, green WhatsApp buttons, "Message us on WhatsApp", or active WhatsApp integration widgets.
-          3. If there is ANY doubt, or if no verified WhatsApp link/mobile prefix exists, you MUST mark "hasWhatsApp: false" and set "whatsAppStatus: 'No active WhatsApp detected'".
-          4. Return "whatsAppProfileName" (can be the verified display name or business name if verified) and "whatsAppStatus" (explicit explanation, e.g. "Mobile number confirmed on WhatsApp" or "Direct wa.me link found on official website").
-
-          Return a JSON array of objects with keys:
-          phone, hasWhatsApp, whatsAppStatus, whatsAppProfileName, whatsAppProfilePic`;
-
-          try {
-            const responseData = await fetch("/api/gemini/verify", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ chunk, selectedCountry }),
-            }).then(async r => {
-              if (r.status === 429) {
-                throw new Error("Quota exceeded on Gemini API verification. Please wait a few seconds and try again.");
-              }
-              if (!r.ok) {
-                const rawText = await r.text().catch(() => "");
-                throw new Error(rawText || `Verification HTTP error status: ${r.status}`);
-              }
-              return r.json();
-            });
-
-            if (responseData && responseData.text) {
-              let verifyJson = responseData.text.trim();
-              if (verifyJson.includes("```")) {
-                const match = verifyJson.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
-                if (match && match[1]) {
-                  verifyJson = match[1].trim();
-                }
-              }
-
-              const verifiedData = JSON.parse(verifyJson);
-
-              for (const v of verifiedData) {
-                const originalBiz = chunk.find(b => b.phone === v.phone || b.phone.replace(/\D/g, '') === v.phone.replace(/\D/g, ''));
-                if (originalBiz) {
-                  await setDoc(doc(db, 'businesses', originalBiz.id), {
-                    ...originalBiz,
-                    hasWhatsApp: v.hasWhatsApp,
-                    whatsAppStatus: v.hasWhatsApp ? v.whatsAppStatus : 'No active WhatsApp detected',
-                    whatsAppProfileName: v.hasWhatsApp ? (v.whatsAppProfileName || originalBiz.name) : originalBiz.name,
-                    whatsAppProfilePic: v.hasWhatsApp ? (v.whatsAppProfilePic || null) : null,
-                  });
-                }
-              }
-            }
-          } catch (verifyErr) {
-            console.error("Chunk verification failed:", verifyErr);
-            for (const b of chunk) {
-              await setDoc(doc(db, 'businesses', b.id), {
-                ...b,
-                whatsAppStatus: "Skipped/Could not verify",
-                hasWhatsApp: false
-              });
-            }
-          }
-
-          // Stagger verification chunk requests to prevent API rate limit / 429 quota exhaustion
-          await sleep(1500);
-        }
+      } else {
+        throw new Error("No businesses found for physical location queries. Try entering verified zones.");
       }
-
-      setCollectionProgress(`Completed! Discovered ${totalDiscoveredCount} new leads.`);
     } catch (err: any) {
-      console.error("Collection error:", err);
-      let userMessage = "An error occurred while collecting data.";
-      if (err.message?.includes("JSON")) {
-        userMessage = "The data received from the AI was corrupted. Try selecting fewer cities.";
-      } else if (err.message?.includes("Rpc failed") || err.message?.includes("xhr error")) {
-        userMessage = "Network error: The AI service is temporarily unavailable. Please try again in a few moments.";
-      } else if (err.message) {
-        userMessage = err.message;
-      }
-      setError(userMessage);
+      setError(err.message || "An error occurred during search.");
     } finally {
-      setLoading(false);
       setIsCollecting(false);
-      if (timerRef.current) {
-        clearInterval(timerRef.current);
-        timerRef.current = null;
-      }
-      setCountdown(0);
+      setCollectionProgress('');
     }
   };
 
-  const stopCollection = () => {
-    setIsCollecting(false);
-    isCollectingRef.current = false;
-    setIsPaused(false);
-    isPausedRef.current = false;
-    setLoading(false);
-    if (timerRef.current) {
-      clearInterval(timerRef.current);
-      timerRef.current = null;
+  // Bulk query WhatsApp numbers
+  const verifyWhatsAppStatuses = async () => {
+    if (wpStatus !== 'CONNECTED') {
+      setError("Please link your WhatsApp account using the QR or Pairing code dashboard before verifying.");
+      return;
     }
-    setCountdown(0);
-  };
 
-  const togglePause = () => {
-    const nextPaused = !isPaused;
-    setIsPaused(nextPaused);
-    isPausedRef.current = nextPaused;
-  };
+    const unverifiedList = businesses.filter(b => b.whatsAppStatus === 'UNVERIFIED');
+    if (unverifiedList.length === 0) {
+      return;
+    }
 
-  const deleteBusiness = async (id: string) => {
+    setIsVerifyingWA(true);
+    setError(null);
+
+    // Batch process in arrays of 5 to avoid overloading
+    const phones = unverifiedList.map(b => b.phone).filter(Boolean);
+    
     try {
-      await deleteDoc(doc(db, 'businesses', id));
-    } catch (err) {
-      console.error("Delete error:", err);
-      setError("Failed to delete business.");
-    }
-  };
+      // Set statuses to VERIFYING
+      setBusinesses(prev => prev.map(b => {
+        if (b.whatsAppStatus === 'UNVERIFIED') {
+          return { ...b, whatsAppStatus: 'VERIFYING' };
+        }
+        return b;
+      }));
 
-  const clearAll = async () => {
-    try {
-      for (const b of businesses) {
-        await deleteDoc(doc(db, 'businesses', b.id));
+      const res = await fetch("/api/whatsapp/verify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ phones, country: selectedCountry })
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || "Batch verification failed.");
       }
-      setShowClearConfirm(false);
-    } catch (err) {
-      console.error("Clear error:", err);
-      setError("Failed to clear data.");
+
+      const results = data.results || {};
+      setBusinesses(prev => prev.map(b => {
+        if (results[b.phone]) {
+          return {
+            ...b,
+            hasWhatsApp: results[b.phone].hasWhatsApp,
+            whatsAppStatus: results[b.phone].hasWhatsApp ? 'ON_WHATSAPP' : 'NOT_ON_WHATSAPP'
+          };
+        }
+        // Recover if omitted
+        if (b.whatsAppStatus === 'VERIFYING') {
+          return { ...b, whatsAppStatus: 'UNVERIFIED' };
+        }
+        return b;
+      }));
+    } catch (err: any) {
+      setError(err.message || "Failed to batch query status. Check connection.");
+      // Rollback verifying state
+      setBusinesses(prev => prev.map(b => {
+        if (b.whatsAppStatus === 'VERIFYING') {
+          return { ...b, whatsAppStatus: 'UNVERIFIED' };
+        }
+        return b;
+      }));
+    } finally {
+      setIsVerifyingWA(false);
     }
   };
 
+  // Clear specific item
+  const deleteBusiness = (id: string) => {
+    setBusinesses(prev => prev.filter(b => b.id !== id));
+  };
+
+  // Export CSV fully formatted for Google Sheets & Microsoft Excel
   const exportToCSV = () => {
     if (businesses.length === 0) return;
+    const headers = ['Business Name', 'Category', 'Location', 'Website', 'Phone', 'Rating', 'Review Count', 'WhatsApp Registered'];
+    
+    // Proper escaping for Google Sheets / Excel import
+    const escapeCSV = (val: any) => {
+      if (val === null || val === undefined) return '""';
+      const str = String(val);
+      // Force cell formatting in Excel/Google Sheets to treat phone digits/codes as text
+      if (str.startsWith('+') || (str.startsWith('0') && str.length > 5)) {
+        return `="${str.replace(/"/g, '""')}"`;
+      }
+      return `"${str.replace(/"/g, '""')}"`;
+    };
 
-    const headers = ["Name", "Website", "Phone", "Rating", "Reviews", "WhatsApp", "Status", "Category", "Location", "Date"];
     const rows = businesses.map(b => [
-      b.name,
-      b.website,
-      b.phone,
-      b.rating,
-      b.reviewCount,
-      b.hasWhatsApp ? "Yes" : "No",
-      b.whatsAppStatus || "",
-      b.category,
-      b.location,
-      new Date(b.createdAt).toLocaleDateString()
+      escapeCSV(b.name),
+      escapeCSV(b.category),
+      escapeCSV(b.location),
+      escapeCSV(b.website),
+      escapeCSV(b.phone),
+      escapeCSV(b.rating),
+      escapeCSV(b.reviewCount),
+      escapeCSV(b.whatsAppStatus === 'ON_WHATSAPP' ? 'YES' : b.whatsAppStatus === 'NOT_ON_WHATSAPP' ? 'NO' : 'UNKNOWN')
     ]);
 
-    const csvContent = [
-      headers.join(","),
-      ...rows.map(r => r.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(","))
-    ].join("\n");
-
+    // Prepend UTF-8 Byte Order Mark (\uFEFF) so Excel & Google Sheets display international characters and phones correctly
+    const csvContent = "\uFEFF" + [headers.join(','), ...rows.map(e => e.join(','))].join('\n');
+    
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.setAttribute("href", url);
-    link.setAttribute("download", `trustpilot_leads_${new Date().toISOString().split('T')[0]}.csv`);
-    link.style.visibility = 'hidden';
+    link.setAttribute("download", `GoogleSheets_All_Leads_${category.replace(/\s+/g, '_')}_${new Date().toISOString().split('T')[0]}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+    URL.revokeObjectURL(url);
   };
 
-  if (!user) {
-    return (
-      <div className="flex flex-col items-center justify-center min-h-screen bg-neutral-50 p-6">
-        <motion.div 
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="bg-white p-8 rounded-3xl shadow-xl border border-neutral-200 max-w-sm w-full text-center"
-        >
-          <div className="w-20 h-20 bg-blue-100 rounded-full flex items-center justify-center mx-auto mb-6">
-            <Search className="w-10 h-10 text-blue-600" />
-          </div>
-          <h1 className="text-3xl font-bold text-neutral-900 mb-2">Trustpilot Collector</h1>
-          <p className="text-neutral-500 mb-8">Ready to discover and verify high-quality local business leads.</p>
-          <button 
-            onClick={handleLogin}
-            className="w-full flex items-center justify-center gap-3 px-6 py-4 bg-blue-600 hover:bg-blue-700 text-white rounded-2xl font-bold transition-all active:scale-95 shadow-md hover:shadow-lg hover:shadow-blue-600/10"
-          >
-            Open Dashboard
-          </button>
-        </motion.div>
-      </div>
-    );
-  }
+  // Export WhatsApp active leads fully formatted for Google Sheets & Microsoft Excel
+  const exportWhatsAppActiveToExcel = () => {
+    const activeLeads = businesses.filter(b => b.whatsAppStatus === 'ON_WHATSAPP');
+    if (activeLeads.length === 0) return;
+    
+    const headers = ['Business Name', 'Category', 'Location', 'Website', 'WhatsApp Number', 'Rating', 'Review Count', 'WhatsApp Status'];
+    
+    // Proper escaping for Google Sheets / Excel import
+    const escapeCSV = (val: any) => {
+      if (val === null || val === undefined) return '""';
+      const str = String(val);
+      if (str.startsWith('+') || (str.startsWith('0') && str.length > 5)) {
+        return `="${str.replace(/"/g, '""')}"`;
+      }
+      return `"${str.replace(/"/g, '""')}"`;
+    };
+
+    const rows = activeLeads.map(b => [
+      escapeCSV(b.name),
+      escapeCSV(b.category),
+      escapeCSV(b.location),
+      escapeCSV(b.website),
+      escapeCSV(b.phone),
+      escapeCSV(b.rating),
+      escapeCSV(b.reviewCount),
+      escapeCSV('ACTIVE_ON_WHATSAPP')
+    ]);
+
+    // Prepend UTF-8 Byte Order Mark (\uFEFF) for immediate accurate rendering in Excel and Google Sheets
+    const csvContent = "\uFEFF" + [headers.join(','), ...rows.map(e => e.join(','))].join('\n');
+    
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.setAttribute("href", url);
+    link.setAttribute("download", `GoogleSheets_WhatsApp_Leads_${category.replace(/\s+/g, '_')}_${new Date().toISOString().split('T')[0]}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
 
   return (
-    <div className="min-h-screen bg-neutral-50 flex flex-col">
-      {/* Header */}
-      <header className="bg-white border-b border-neutral-200 px-6 py-4 flex items-center justify-between sticky top-0 z-10">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center">
-            <Search className="w-6 h-6 text-white" />
+    <div id="app-root" className="min-h-screen bg-slate-50 text-slate-800 font-sans leading-relaxed flex flex-col antialiased">
+      {/* Upper Brand bar */}
+      <header id="header-bar" className="bg-white border-b border-slate-100 sticky top-0 z-40 shadow-xs">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+          <div className="flex items-center space-x-3">
+            <div className="h-10 w-10 bg-cyan-600 rounded-xl flex items-center justify-center text-white font-bold shadow-md shadow-cyan-100">
+              MDC
+            </div>
+            <div>
+              <h1 className="font-bold text-lg tracking-tight text-slate-900">Map Data Collect</h1>
+              <p className="text-xs text-slate-400 font-medium">B2B Lead Collector & WhatsApp Qualifier</p>
+            </div>
           </div>
-          <h1 className="text-xl font-bold text-neutral-900 hidden sm:block">Trustpilot Collector</h1>
-        </div>
-        
-        <div className="flex items-center gap-4">
-          {businesses.length > 0 && (
-            <button 
-              onClick={exportToCSV}
-              className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white text-sm font-bold rounded-xl hover:bg-green-700 transition-all active:scale-95"
-            >
-              <Download className="w-4 h-4" />
-              Export CSV
-            </button>
-          )}
-          <div className="text-right hidden sm:block">
-            <p className="text-sm font-bold text-neutral-900">{user.displayName || "Workspace Guest"}</p>
-            <p className="text-xs text-neutral-500">{user.email || "Active Session"}</p>
+          
+          {/* Real-time Connection Widget */}
+          <div className="flex items-center space-x-2">
+            <span className="text-xs font-semibold text-slate-400 hidden sm:inline">WhatsApp Socket:</span>
+            <div className={`px-3 py-1.5 rounded-full flex items-center space-x-1.5 text-xs font-bold transition-all duration-300 ${
+              wpStatus === 'CONNECTED' ? 'bg-emerald-50 text-emerald-700 border border-emerald-100' :
+              wpStatus === 'QR_READY' || wpStatus === 'PAIRING_READY' ? 'bg-amber-50 text-amber-700 border border-amber-100 animate-pulse' :
+              wpStatus === 'CONNECTING' ? 'bg-blue-50 text-blue-700 border border-blue-100 animate-pulse' :
+              'bg-slate-100 text-slate-600 border border-slate-200'
+            }`}>
+              <span className={`h-2 w-2 rounded-full ${
+                wpStatus === 'CONNECTED' ? 'bg-emerald-500' :
+                wpStatus === 'QR_READY' || wpStatus === 'PAIRING_READY' ? 'bg-amber-500' :
+                wpStatus === 'CONNECTING' ? 'bg-blue-500' : 'bg-slate-400'
+              }`} />
+              <span>{wpStatus === 'CONNECTED' ? 'CONNECTED' : wpStatus}</span>
+            </div>
           </div>
-          <button 
-            onClick={handleLogout}
-            className="px-4 py-2 text-sm font-medium text-neutral-600 hover:text-red-600 transition-colors"
-          >
-            Sign Out
-          </button>
         </div>
       </header>
 
-      <main className="flex-1 max-w-7xl mx-auto w-full p-6 grid grid-cols-1 lg:grid-cols-3 gap-8">
-        {/* Controls Panel */}
-        <div className="lg:col-span-1 space-y-6">
-          {/* WhatsApp Web Linker (Baileys) */}
-          <section className="bg-white p-6 rounded-3xl shadow-sm border border-neutral-200">
-            <h2 className="text-lg font-bold text-neutral-900 mb-4 flex items-center gap-2">
-              <MessageCircle className="w-5 h-5 text-green-500" />
-              WhatsApp Live Linker
-            </h2>
-            
-            <p className="text-sm text-neutral-500 mb-6 font-medium leading-relaxed">
-              Connect a WhatsApp number to verify business leads with 100% accuracy using server-side local sockets.
-            </p>
+      {/* Main Workspace */}
+      <main className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 lg:p-8 grid grid-cols-1 lg:grid-cols-12 gap-6">
+        
+        {/* Left Side: Setup & Connection & Filters */}
+        <section id="config-panel" className="lg:col-span-4 flex flex-col space-y-6">
+          
+          {/* Card: Search Input Form */}
+          <div className="bg-white rounded-2xl border border-slate-100 shadow-xs p-5 space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-50 pb-3">
+              <h2 className="font-bold text-slate-900 flex items-center gap-2">
+                <Search className="w-4 h-4 text-cyan-600" />
+                Query Settings
+              </h2>
+              <span className="text-xs bg-slate-100 px-2 py-0.5 rounded text-slate-500 font-bold uppercase tracking-wider">Target API</span>
+            </div>
 
-            {wpError && (
-              <div className="mb-4 p-4.5 bg-amber-50 border border-amber-200 rounded-2xl text-xs text-amber-800 font-medium leading-relaxed flex flex-col gap-1 shadow-sm">
-                <span className="font-bold flex items-center gap-1.5 text-amber-900">
-                  ⚠️ Status Note:
-                </span>
-                <span>{wpError}</span>
-              </div>
-            )}
-
-            {wpStatus === "DISCONNECTED" && (
-              <div className="space-y-4">
-                {/* Tabs */}
-                <div className="flex border-b border-neutral-200">
-                  <button
-                    onClick={() => setLinkMethod('qr')}
-                    className={`flex-1 pb-3 text-sm font-bold border-b-2 transition-all ${
-                      linkMethod === 'qr'
-                        ? 'border-green-600 text-green-600'
-                        : 'border-transparent text-neutral-400 hover:text-neutral-600'
-                    }`}
-                  >
-                    Scan QR Code
-                  </button>
-                  <button
-                    onClick={() => setLinkMethod('code')}
-                    className={`flex-1 pb-3 text-sm font-bold border-b-2 transition-all ${
-                      linkMethod === 'code'
-                        ? 'border-green-600 text-green-600'
-                        : 'border-transparent text-neutral-400 hover:text-neutral-600'
-                    }`}
-                  >
-                    Use Pairing Code
-                  </button>
-                </div>
-
-                {linkMethod === 'qr' ? (
-                  <div className="space-y-3 pt-2">
-                    <p className="text-xs text-neutral-500 font-medium leading-relaxed">
-                      Generate a WhatsApp Web companion QR code to scan with your phone's WhatsApp camera.
-                    </p>
-                    <button
-                      onClick={() => handleWpStart()}
-                      disabled={wpLoading}
-                      className="w-full flex items-center justify-center gap-3 px-5 py-4 bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white rounded-2xl font-bold transition-all active:scale-95 shadow-md shadow-green-600/10"
-                    >
-                      {wpLoading ? (
-                        <Loader2 className="w-5 h-5 animate-spin" />
-                      ) : (
-                        <MessageCircle className="w-5 h-5" />
-                      )}
-                      Link with QR Code
-                    </button>
-                  </div>
-                ) : (
-                  <div className="space-y-4 pt-2">
-                    <p className="text-xs text-neutral-500 font-medium leading-relaxed">
-                      Enter your mobile number with country code (e.g. +8801700000000 or +15145551234) to request an 8-character pairing code.
-                    </p>
-                    <div className="space-y-2">
-                      <label className="block text-[11px] font-bold text-neutral-400 uppercase tracking-wider">Phone Number</label>
-                      <input
-                        type="text"
-                        value={pairingPhone}
-                        onChange={(e) => setPairingPhone(e.target.value)}
-                        placeholder="e.g. +88017XXXXXXXX"
-                        className="w-full px-4 py-3 bg-neutral-50 border border-neutral-200 rounded-xl focus:ring-2 focus:ring-green-500 outline-none transition-all text-sm font-medium"
-                      />
-                    </div>
-                    <button
-                      onClick={() => handleWpStart(pairingPhone)}
-                      disabled={wpLoading || !pairingPhone.trim()}
-                      className="w-full flex items-center justify-center gap-3 px-5 py-4 bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white rounded-2xl font-bold transition-all active:scale-95 shadow-md shadow-green-600/10"
-                    >
-                      {wpLoading ? (
-                        <Loader2 className="w-5 h-5 animate-spin" />
-                      ) : (
-                        <MessageCircle className="w-5 h-5" />
-                      )}
-                      Request Pairing Code
-                    </button>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {(wpStatus === "CONNECTING" || wpStatus === "QR_READY" || wpStatus === "PAIRING_READY") && (
-              <div className="space-y-4">
-                <div className="p-4 bg-neutral-50 rounded-2xl border border-neutral-100 flex flex-col items-center">
-                  {wpStatus === "CONNECTING" && !wpQr && !wpPairingCode ? (
-                    <div className="py-8 flex flex-col items-center gap-3">
-                      <Loader2 className="w-8 h-8 text-green-600 animate-spin" />
-                      <p className="text-sm text-neutral-500 font-bold">Initializing connection...</p>
-                    </div>
-                  ) : wpStatus === "PAIRING_READY" && wpPairingCode ? (
-                    <div className="flex flex-col items-center w-full py-2">
-                      <div className="text-[11px] font-bold text-neutral-400 uppercase tracking-wider mb-3">WhatsApp Pairing Code</div>
-                      <div className="flex justify-center gap-1.5 mb-4 font-mono font-bold text-xl text-green-700">
-                        {wpPairingCode.split("").map((char, index) => (
-                          <span
-                            key={index}
-                            className="w-8 h-10 flex items-center justify-center bg-white border border-neutral-200 rounded-lg shadow-sm"
-                          >
-                            {char}
-                          </span>
-                        ))}
-                      </div>
-                      <p className="text-[11px] text-neutral-500 text-center leading-relaxed max-w-[220px]">
-                        Open WhatsApp on your phone → Settings → Linked Devices → Link with Phone Number, then enter this 8-digit code.
-                      </p>
-                    </div>
-                  ) : (
-                    wpQr && (
-                      <div className="flex flex-col items-center">
-                        <div className="bg-white p-3 rounded-2xl shadow-sm border border-neutral-200 mb-3">
-                          <img src={wpQr} className="w-48 h-48" alt="WhatsApp Link QR" />
-                        </div>
-                        <p className="text-[11px] text-neutral-500 text-center leading-relaxed max-w-[220px]">
-                          Open WhatsApp on your phone → Settings → Linked Devices → Link a Device, then scan this QR.
-                        </p>
-                      </div>
-                    )
-                  )}
-                </div>
-
-                <button
-                  onClick={handleWpLogout}
-                  disabled={wpLoading}
-                  className="w-full py-3 bg-red-50 text-red-600 rounded-xl font-bold hover:bg-red-100 transition-all text-sm"
-                >
-                  Cancel Connection
-                </button>
-              </div>
-            )}
-
-            {wpStatus === "CONNECTED" && (
-              <div className="space-y-4">
-                <div className="p-4 bg-green-50 border border-green-100 rounded-2xl flex items-center gap-3">
-                  <div className="relative flex-shrink-0">
-                    <div className="w-3 h-3 bg-green-500 rounded-full" />
-                    <div className="absolute inset-0 w-3 h-3 bg-green-500 rounded-full animate-ping" />
-                  </div>
-                  <div>
-                    <h4 className="text-sm font-bold text-green-800">Connection Active</h4>
-                    <p className="text-xs text-green-600 font-medium">Real-time verifier online ✓</p>
-                  </div>
-                </div>
-
-                <div className="text-[11px] text-neutral-400 bg-neutral-50 p-2.5 rounded-lg border border-neutral-100 leading-normal">
-                  Live verification is fully active. All collected businesses will be instantly checked using your connected WhatsApp number.
-                </div>
-
-                <button
-                  onClick={handleWpLogout}
-                  disabled={wpLoading}
-                  className="w-full py-3 bg-red-50 hover:bg-red-100 text-red-600 font-bold rounded-2xl transition-all text-sm"
-                >
-                  {wpLoading ? <Loader2 className="w-4 h-4 animate-spin mx-auto" /> : "Disconnect Device"}
-                </button>
-              </div>
-            )}
-          </section>
-
-          <section className="bg-white p-6 rounded-3xl shadow-sm border border-neutral-200">
-            <h2 className="text-lg font-bold text-neutral-900 mb-6 flex items-center gap-2">
-              <Search className="w-5 h-5 text-blue-600" />
-              New Collection
-            </h2>
-            
             <div className="space-y-4">
               <div>
-                <label className="block text-xs font-bold text-neutral-400 uppercase tracking-wider mb-2">Business Category</label>
-                <input 
-                  type="text" 
-                  value={category}
-                  onChange={(e) => setCategory(e.target.value)}
-                  placeholder="e.g. Restaurants, Plumbers"
-                  className="w-full px-4 py-3 bg-neutral-50 border border-neutral-200 rounded-2xl focus:ring-2 focus:ring-blue-500 outline-none transition-all"
-                />
-              </div>
-              
-              <div>
-                <label className="block text-xs font-bold text-neutral-400 uppercase tracking-wider mb-2">Country</label>
+                <label id="category-label" className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">
+                  1. Business Category
+                </label>
                 <select 
-                  value={selectedCountry}
-                  onChange={(e) => {
-                    setSelectedCountry(e.target.value);
-                    setSelectedCities([]);
-                  }}
-                  className="w-full px-4 py-3 bg-neutral-50 border border-neutral-200 rounded-2xl focus:ring-2 focus:ring-blue-500 outline-none transition-all"
+                  id="category-select"
+                  value={category} 
+                  onChange={(e) => setCategory(e.target.value)}
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-slate-800 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-cyan-500/20 focus:border-cyan-500 transition-all duration-150"
                 >
-                  <option value="">Select Country</option>
-                  {COUNTRIES.map(c => (
-                    <option key={c.name} value={c.name}>{c.name}</option>
+                  {CATEGORIES.map((catString) => (
+                    <option key={catString} value={catString}>{catString}</option>
                   ))}
                 </select>
               </div>
 
-              {selectedCountry && (
-                <div>
-                  <div className="flex items-center justify-between mb-2">
-                    <label className="block text-xs font-bold text-neutral-400 uppercase tracking-wider">Cities (Multi-select)</label>
-                    <button 
-                      type="button"
-                      onClick={() => {
-                        const allCities = COUNTRIES.find(c => c.name === selectedCountry)?.cities || [];
-                        if (selectedCities.length === allCities.length) {
-                          setSelectedCities([]);
-                        } else {
-                          setSelectedCities([...allCities]);
-                        }
-                      }}
-                      className="text-[11px] font-bold text-blue-600 hover:text-blue-700 transition-all hover:underline"
-                    >
-                      {selectedCities.length === (COUNTRIES.find(c => c.name === selectedCountry)?.cities.length || 0) ? "Deselect All" : "Select All"}
-                    </button>
-                  </div>
-                  <div className="grid grid-cols-2 gap-2 max-h-40 overflow-y-auto p-2 bg-neutral-50 border border-neutral-200 rounded-2xl">
-                    {COUNTRIES.find(c => c.name === selectedCountry)?.cities.map(city => (
-                      <label key={city} className="flex items-center gap-2 p-2 hover:bg-white rounded-xl cursor-pointer transition-colors">
-                        <input 
+              <div>
+                <label id="country-label" className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">
+                  2. Select Country
+                </label>
+                <select 
+                  id="country-select"
+                  value={selectedCountry} 
+                  onChange={(e) => setSelectedCountry(e.target.value)}
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-slate-800 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-cyan-500/20 focus:border-cyan-500 transition-all duration-150"
+                >
+                  {COUNTRIES.map((ct) => (
+                    <option key={ct.name} value={ct.name}>{ct.name}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label id="city-label" className="block text-xs font-bold text-slate-500 uppercase tracking-wider">
+                    3. Select Cities ({selectedCities.length})
+                  </label>
+                  {!customCity && (
+                    <div className="flex space-x-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const match = COUNTRIES.find(c => c.name === selectedCountry);
+                          if (match) setSelectedCities(match.cities);
+                        }}
+                        className="text-[10px] text-cyan-600 hover:text-cyan-800 font-bold tracking-tight transition-all"
+                      >
+                        Select All
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setSelectedCities([])}
+                        className="text-[10px] text-slate-400 hover:text-slate-600 font-bold tracking-tight transition-all"
+                      >
+                        Clear
+                      </button>
+                    </div>
+                  )}
+                </div>
+                
+                <div className={`border border-slate-200 rounded-xl bg-slate-50 p-2 max-h-48 overflow-y-auto space-y-0.5 transition-all ${customCity ? 'opacity-50 pointer-events-none' : ''}`}>
+                  {COUNTRIES.find(c => c.name === selectedCountry)?.cities.map((cityStr) => {
+                    const isChecked = selectedCities.includes(cityStr);
+                    return (
+                      <label 
+                        key={cityStr} 
+                        className={`flex items-center space-x-2 px-2.5 py-1.5 rounded-lg text-xs font-medium cursor-pointer transition-all ${
+                          isChecked ? 'bg-cyan-50 text-cyan-800 border-l-2 border-cyan-500' : 'hover:bg-slate-100 text-slate-700'
+                        }`}
+                      >
+                        <input
                           type="checkbox"
-                          checked={selectedCities.includes(city)}
-                          onChange={(e) => {
-                            if (e.target.checked) {
-                              setSelectedCities([...selectedCities, city]);
+                          checked={isChecked}
+                          disabled={!!customCity}
+                          onChange={() => {
+                            if (isChecked) {
+                              setSelectedCities(prev => prev.filter(c => c !== cityStr));
                             } else {
-                              setSelectedCities(selectedCities.filter(c => c !== city));
+                              setSelectedCities(prev => [...prev, cityStr]);
                             }
                           }}
-                          className="w-4 h-4 rounded border-neutral-300 text-blue-600 focus:ring-blue-500"
+                          className="accent-cyan-600 rounded text-cyan-600 cursor-pointer"
                         />
-                        <span className="text-sm text-neutral-700">{city}</span>
+                        <span className="truncate">{cityStr}</span>
                       </label>
-                    ))}
-                  </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div>
+                <label id="custom-city-label" className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">
+                  Or enter Custom City (Overrides select)
+                </label>
+                <input 
+                  id="custom-city-input"
+                  type="text" 
+                  value={customCity}
+                  onChange={(e) => setCustomCity(e.target.value)}
+                  placeholder="e.g. San Jose, Newcastle"
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-slate-800 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500/20 focus:border-cyan-500 transition-all duration-150"
+                />
+              </div>
+
+              <button
+                id="collect-btn"
+                onClick={triggerCollection}
+                disabled={isCollecting}
+                className="w-full bg-cyan-600 hover:bg-cyan-700 text-white font-bold py-3 px-4 rounded-xl flex items-center justify-center space-x-2 shadow-lg shadow-cyan-600/10 active:scale-98 transition-all duration-150 disabled:opacity-50 disabled:pointer-events-none"
+              >
+                {isCollecting ? (
+                  <>
+                    <Loader2 className="w-4.5 h-4.5 animate-spin" />
+                    <span>Collecting Businesses & Contacts...</span>
+                  </>
+                ) : (
+                  <>
+                    <Search className="w-4.5 h-4.5" />
+                    <span>Search Trustpilot & Directories</span>
+                  </>
+                )}
+              </button>
+
+              {collectionProgress && (
+                <div className="p-3 bg-cyan-50 border border-cyan-100 rounded-xl text-xs font-semibold text-cyan-800 flex items-center space-x-2 animate-pulse">
+                  <Loader2 className="w-3.5 h-3.5 animate-spin text-cyan-600" />
+                  <span>{collectionProgress}</span>
                 </div>
               )}
+            </div>
+          </div>
 
-              {error && (
-                <div className="p-3 bg-red-50 border border-red-100 rounded-xl flex items-center gap-2 text-red-600 text-sm">
-                  <AlertCircle className="w-4 h-4" />
-                  {error}
-                </div>
+          {/* Card: WhatsApp Integration Dashboard */}
+          <div className="bg-white rounded-2xl border border-slate-100 shadow-xs p-5 space-y-4">
+            <div className="border-b border-slate-50 pb-3 flex items-center justify-between">
+              <h2 className="font-bold text-slate-900 flex items-center gap-2">
+                <MessageCircle className="w-4 h-4 text-emerald-600" />
+                WhatsApp Channel Setup
+              </h2>
+              {wpStatus === 'CONNECTED' && (
+                <button 
+                  id="logout-wp-btn"
+                  onClick={handleWpLogout} 
+                  className="text-xs text-red-500 hover:text-red-700 font-bold flex items-center gap-1"
+                >
+                  <LogOut className="w-3 h-3" /> Disconnect
+                </button>
               )}
+            </div>
 
-              <div className="pt-4 flex flex-col gap-3">
-                {!isCollecting ? (
-                  <button 
-                    onClick={startCollection}
-                    disabled={loading}
-                    className="w-full flex items-center justify-center gap-2 px-6 py-4 bg-blue-600 text-white rounded-2xl font-bold hover:bg-blue-700 transition-all active:scale-95 disabled:opacity-50"
+            {wpStatus === 'DISCONNECTED' && (
+              <div className="space-y-4">
+                <p className="text-xs text-slate-500 leading-normal">
+                  Connect your real WhatsApp account to verify if B2B phones gathered have active profiles.
+                </p>
+
+                {/* Tabs to trigger Link Mode */}
+                <div className="grid grid-cols-2 gap-1.5 p-1 bg-slate-100 rounded-lg">
+                  <button
+                    id="tab-qr"
+                    onClick={() => setLinkMethod('qr')}
+                    className={`py-1.5 rounded-md text-xs font-bold transition-all ${linkMethod === 'qr' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-500 hover:text-slate-800'}`}
                   >
-                    {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Play className="w-5 h-5" />}
-                    Start Collecting
+                    Scan QR Code
+                  </button>
+                  <button
+                    id="tab-code"
+                    onClick={() => setLinkMethod('code')}
+                    className={`py-1.5 rounded-md text-xs font-bold transition-all ${linkMethod === 'code' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-500 hover:text-slate-800'}`}
+                  >
+                    Pairing Code
+                  </button>
+                </div>
+
+                {linkMethod === 'qr' ? (
+                  <button
+                    id="start-qr-btn"
+                    onClick={() => handleWpStart()}
+                    disabled={wpLoading}
+                    className="w-full bg-slate-900 hover:bg-slate-800 text-white font-bold py-2.5 px-3 rounded-xl text-xs flex items-center justify-center space-x-1.5 disabled:opacity-50"
+                  >
+                    {wpLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null}
+                    <span>Generate QR Code</span>
                   </button>
                 ) : (
-                  <div className="grid grid-cols-2 gap-3">
-                    <button 
-                      onClick={togglePause}
-                      className={`flex items-center justify-center gap-2 px-4 py-4 ${isPaused ? 'bg-amber-500' : 'bg-neutral-100'} text-neutral-900 rounded-2xl font-bold hover:opacity-90 transition-all`}
-                    >
-                      {isPaused ? <Play className="w-5 h-5" /> : <Pause className="w-5 h-5" />}
-                      {isPaused ? 'Resume' : 'Pause'}
-                    </button>
-                    <button 
-                      onClick={stopCollection}
-                      className="flex items-center justify-center gap-2 px-4 py-4 bg-red-100 text-red-600 rounded-2xl font-bold hover:bg-red-200 transition-all"
-                    >
-                      <Square className="w-5 h-5" />
-                      Stop
-                    </button>
-                  </div>
-                )}
-                
-                {businesses.length > 0 && (
-                  <div className="relative">
-                    {showClearConfirm ? (
-                      <div className="flex flex-col gap-2 p-3 bg-red-50 border border-red-100 rounded-2xl">
-                        <p className="text-xs font-bold text-red-600 text-center">Are you sure? This cannot be undone.</p>
-                        <div className="grid grid-cols-2 gap-2">
-                          <button 
-                            onClick={clearAll}
-                            className="px-4 py-2 bg-red-600 text-white text-xs font-bold rounded-xl hover:bg-red-700 transition-all"
-                          >
-                            Yes, Clear All
-                          </button>
-                          <button 
-                            onClick={() => setShowClearConfirm(false)}
-                            className="px-4 py-2 bg-white text-neutral-600 border border-neutral-200 text-xs font-bold rounded-xl hover:bg-neutral-50 transition-all"
-                          >
-                            Cancel
-                          </button>
-                        </div>
-                      </div>
-                    ) : (
-                      <button 
-                        onClick={() => setShowClearConfirm(true)}
-                        className="w-full flex items-center justify-center gap-2 px-6 py-3 text-neutral-400 hover:text-red-500 transition-colors text-sm font-medium"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                        Clear All Data
-                      </button>
-                    )}
-                  </div>
-                )}
-              </div>
-            </div>
-          </section>
-
-          {/* Stats */}
-          <section className="bg-white p-6 rounded-3xl shadow-sm border border-neutral-200 grid grid-cols-2 gap-4">
-            <div className="text-center p-4 bg-neutral-50 rounded-2xl">
-              <p className="text-2xl font-bold text-neutral-900">{businesses.length}</p>
-              <p className="text-xs font-bold text-neutral-400 uppercase tracking-wider">Collected</p>
-            </div>
-            <div className="text-center p-4 bg-green-50 rounded-2xl">
-              <p className="text-2xl font-bold text-green-600">
-                {businesses.filter(b => b.hasWhatsApp).length}
-              </p>
-              <p className="text-xs font-bold text-green-400 uppercase tracking-wider">WhatsApp</p>
-            </div>
-          </section>
-        </div>
-
-        {/* Results Panel */}
-        <div className="lg:col-span-2 space-y-6">
-          <div className="flex items-center justify-between">
-            <h2 className="text-xl font-bold text-neutral-900">Collected Businesses</h2>
-            {loading && (
-              <div className="flex flex-col items-end gap-1">
-                <div className="flex items-center gap-2 text-blue-600 text-sm font-medium">
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  <span>{collectionProgress || "Collecting data..."}</span>
-                </div>
-                {countdown > 0 && (
-                  <div className="flex flex-col items-end w-48">
-                    <div className="flex justify-between w-full text-[10px] font-bold text-neutral-400 uppercase tracking-widest mb-1">
-                      <span>Estimated Time</span>
-                      <span>{Math.floor(countdown / 60)}:{(countdown % 60).toString().padStart(2, '0')}</span>
-                    </div>
-                    <div className="w-full h-1.5 bg-neutral-200 rounded-full overflow-hidden">
-                      <motion.div 
-                        initial={{ width: "100%" }}
-                        animate={{ width: `${(countdown / totalEstimatedTime) * 100}%` }}
-                        className="h-full bg-blue-600"
+                  <div className="space-y-3">
+                    <div>
+                      <label id="phone-pair-label" className="block text-xs font-bold text-slate-500 uppercase mb-1">Your WhatsApp Phone Number</label>
+                      <input
+                        id="phone-pair-input"
+                        type="text"
+                        value={pairingPhone}
+                        onChange={(e) => setPairingPhone(e.target.value)}
+                        placeholder="e.g. +14155552671"
+                        className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
                       />
                     </div>
+                    <button
+                      id="start-pairing-btn"
+                      onClick={() => handleWpStart(pairingPhone)}
+                      disabled={wpLoading || !pairingPhone}
+                      className="w-full bg-slate-900 hover:bg-slate-800 text-white font-bold py-2.5 px-3 rounded-xl text-xs flex items-center justify-center space-x-1.5 disabled:opacity-50"
+                    >
+                      {wpLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null}
+                      <span>Generate Pairing Code</span>
+                    </button>
                   </div>
                 )}
               </div>
             )}
-          </div>
 
-          <div className="space-y-4">
-            <AnimatePresence mode="popLayout">
-              {businesses.length === 0 && !loading ? (
-                <motion.div 
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  className="text-center py-20 bg-white rounded-3xl border-2 border-dashed border-neutral-200"
+            {wpStatus === 'CONNECTING' && (
+              <div className="flex flex-col items-center justify-center py-6 text-center space-y-2">
+                <Loader2 className="w-8 h-8 text-cyan-600 animate-spin" />
+                <p className="text-xs font-bold text-slate-700">Connecting WhatsApp Session...</p>
+                <p className="text-xs text-slate-400">Usually completes in 10-15 seconds.</p>
+              </div>
+            )}
+
+            {wpStatus === 'QR_READY' && wpQr && (
+              <div className="flex flex-col items-center justify-center py-4 space-y-3">
+                <p className="text-xs text-slate-500 font-semibold text-center leading-normal">
+                  Open WhatsApp &gt; Linked Devices &gt; Link a Device. Scan the QR code below:
+                </p>
+                <div className="p-3 bg-white border border-slate-150 rounded-xl shadow-xs">
+                  <img src={wpQr} alt="WhatsApp Connection QR Code" className="w-48 h-48 block" />
+                </div>
+                <button
+                  id="cancel-qr-btn"
+                  onClick={handleWpLogout}
+                  className="text-xs text-slate-500 hover:text-slate-800 underline font-medium"
                 >
-                  <Search className="w-12 h-12 text-neutral-200 mx-auto mb-4" />
-                  <p className="text-neutral-400 font-medium">No data collected yet.</p>
-                </motion.div>
-              ) : (
-                businesses.map((business) => (
-                  <motion.div
-                    key={business.id}
-                    layout
-                    initial={{ opacity: 0, x: -20 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    exit={{ opacity: 0, scale: 0.95 }}
-                    className={`bg-white p-5 rounded-3xl shadow-sm border ${business.hasWhatsApp ? 'border-green-200 bg-green-50/30' : 'border-neutral-200'} flex flex-col sm:flex-row sm:items-center justify-between gap-4 group transition-all hover:shadow-md`}
-                  >
-                    <div className="flex items-start gap-4 flex-1 min-w-0">
-                      {business.hasWhatsApp && (
-                        <div className="relative flex-shrink-0">
-                          <div className="w-12 h-12 rounded-full bg-green-100 border-2 border-green-200 overflow-hidden flex items-center justify-center">
-                            {business.whatsAppProfilePic ? (
-                              <img 
-                                src={business.whatsAppProfilePic} 
-                                alt={business.whatsAppProfileName} 
-                                className="w-full h-full object-cover"
-                                referrerPolicy="no-referrer"
-                              />
-                            ) : (
-                              <MessageCircle className="w-6 h-6 text-green-600" />
-                            )}
-                          </div>
-                          <div className="absolute -bottom-1 -right-1 w-5 h-5 bg-green-500 rounded-full border-2 border-white flex items-center justify-center">
-                            <div className="w-2 h-2 bg-white rounded-full animate-pulse" />
-                          </div>
-                        </div>
-                      )}
-                      
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 mb-1">
-                          <h3 className="text-lg font-bold text-neutral-900 truncate">
-                            {business.hasWhatsApp ? (business.whatsAppProfileName || business.name) : business.name}
-                          </h3>
-                          {business.hasWhatsApp && (
-                            <div className="flex flex-col gap-1">
-                              <span className="flex items-center gap-1 px-2 py-0.5 bg-green-100 text-green-600 text-[10px] font-bold uppercase tracking-wider rounded-full w-fit">
-                                <MessageCircle className="w-3 h-3" />
-                                Verified
-                              </span>
-                            </div>
-                          )}
-                          {!business.hasWhatsApp && business.whatsAppStatus === 'Pending Verification' && (
-                            <div className="flex flex-col gap-1">
-                              <span className="flex items-center gap-1 px-2 py-0.5 bg-blue-100 text-blue-600 text-[10px] font-bold uppercase tracking-wider rounded-full w-fit animate-pulse">
-                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                                Checking...
-                              </span>
-                            </div>
-                          )}
-                        </div>
-                        
-                        {business.hasWhatsApp && business.whatsAppStatus && (
-                          <p className="text-[10px] text-green-600 font-medium mb-2 italic bg-green-100/50 px-2 py-0.5 rounded-md w-fit animate-fade-in">
-                            ✓ {business.whatsAppStatus}
-                          </p>
-                        )}
+                  Cancel Scan
+                </button>
+              </div>
+            )}
 
-                        {!business.hasWhatsApp && business.whatsAppStatus && business.whatsAppStatus !== 'Pending Verification' && (
-                          <p className="text-[10px] text-neutral-400 font-medium mb-2 bg-neutral-100 px-2 py-0.5 rounded-md w-fit">
-                            ✗ {business.whatsAppStatus}
-                          </p>
-                        )}
-                        
-                        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-neutral-500">
-                        <a 
-                          href={business.website} 
-                          target="_blank" 
-                          rel="noopener noreferrer"
-                          className="flex items-center gap-1.5 hover:text-blue-600 transition-colors"
-                        >
-                          <ExternalLink className="w-3.5 h-3.5" />
-                          {getDisplayWebsite(business.website)}
-                        </a>
-                        <div className="flex items-center gap-1.5">
-                          <Phone className="w-3.5 h-3.5" />
-                          {business.phone}
-                        </div>
-                        <div className="flex items-center gap-1.5">
-                          <Star className="w-3.5 h-3.5 text-amber-400 fill-amber-400" />
-                          <span className="font-bold text-neutral-900">{business.rating}</span>
-                          <span className="text-neutral-400">({business.reviewCount} reviews)</span>
-                        </div>
-                      </div>
-                    </div>
-                    </div>
+            {wpStatus === 'PAIRING_READY' && wpPairingCode && (
+              <div className="flex flex-col items-center justify-center py-4 text-center space-y-4">
+                <p className="text-xs text-slate-500 font-semibold leading-normal">
+                  Open WhatsApp notification on your phone and enter this code:
+                </p>
+                <div className="px-5 py-3 bg-slate-50 border-2 border-dashed border-slate-200 rounded-xl">
+                  <span className="text-2xl font-black tracking-widest text-emerald-600 select-all font-mono">
+                    {wpPairingCode}
+                  </span>
+                </div>
+                <button
+                  id="cancel-pairing-btn"
+                  onClick={handleWpLogout}
+                  className="text-xs text-slate-500 hover:text-slate-800 underline font-medium"
+                >
+                  Cancel Pairing
+                </button>
+              </div>
+            )}
 
-                    <div className="flex items-center gap-2 sm:self-center">
-                      {wpStatus === "CONNECTED" && (
-                        <button
-                          onClick={() => checkBusinessWhatsAppLive(business.id, business.phone)}
-                          disabled={manualChecking === business.id}
-                          className="flex items-center gap-1.5 px-3 py-2 bg-neutral-100 border border-neutral-200 hover:bg-neutral-200 text-neutral-700 text-xs font-bold rounded-xl transition-all active:scale-95 disabled:opacity-50"
-                        >
-                          {manualChecking === business.id ? (
-                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                          ) : (
-                            <MessageCircle className="w-3.5 h-3.5 text-green-600" />
-                          )}
-                          Check Live
-                        </button>
-                      )}
+            {wpStatus === 'CONNECTED' && (
+              <div className="bg-emerald-50/50 rounded-xl p-3.5 border border-emerald-100/50 flex items-start space-x-3 text-emerald-900">
+                <div className="bg-emerald-500 text-white rounded-lg p-1.5">
+                  <Check className="w-4 h-4 block" />
+                </div>
+                <div>
+                  <h4 className="text-xs font-bold">Successfully Connected!</h4>
+                  <p className="text-xs text-emerald-700/80 mt-0.5 leading-normal">
+                    The active session can now execute bulk status validations of all retrieved business phones.
+                  </p>
+                </div>
+              </div>
+            )}
 
-                      {business.hasWhatsApp && (
-                        <a 
-                          href={`https://wa.me/${business.phone.replace(/\D/g, '')}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white text-sm font-bold rounded-xl hover:bg-green-700 transition-all active:scale-95"
-                        >
-                          <MessageCircle className="w-4 h-4" />
-                          Message
-                        </a>
-                      )}
-                      <button 
-                        onClick={() => deleteBusiness(business.id)}
-                        className="p-3 text-neutral-400 hover:text-red-500 hover:bg-red-50 rounded-2xl transition-all"
-                      >
-                        <Trash2 className="w-5 h-5" />
-                      </button>
-                    </div>
-                  </motion.div>
-                ))
-              )}
-            </AnimatePresence>
+            {wpError && (
+              <div className="p-3 bg-rose-50 border border-rose-100 text-rose-800 rounded-xl text-xs flex items-start space-x-2">
+                <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                <span>{wpError}</span>
+              </div>
+            )}
           </div>
-        </div>
+        </section>
+
+        {/* Right Side: Leads List & Controls */}
+        <section id="results-panel" className="lg:col-span-8 flex flex-col space-y-4">
+          
+          {/* Quick Metrics & Global Controls Row */}
+          <div className="bg-white rounded-xl border border-slate-100 shadow-xs px-5 py-4 flex flex-col sm:flex-row items-center justify-between gap-4">
+            <div className="flex items-center space-x-6 w-full sm:w-auto">
+              <div>
+                <span className="block text-xs font-extrabold text-slate-400 uppercase tracking-wider">Total Leads</span>
+                <span className="text-2xl font-black text-slate-900">{collectionStats.total}</span>
+              </div>
+              <div className="h-8 w-px bg-slate-100" />
+              <div>
+                <span className="block text-xs font-extrabold text-slate-400 uppercase tracking-wider">Verified WA</span>
+                <span className="text-2xl font-black text-emerald-600">{collectionStats.verified}</span>
+              </div>
+            </div>
+
+            <div className="flex items-center space-x-2 w-full sm:w-auto justify-end">
+              {businesses.length > 0 && (
+                <>
+                  <button
+                    id="verify-wa-btn"
+                    onClick={verifyWhatsAppStatuses}
+                    disabled={isVerifyingWA || wpStatus !== 'CONNECTED'}
+                    className={`px-3.5 py-2 rounded-xl text-xs font-bold flex items-center space-x-1.5 transition-all outline-none ${
+                      wpStatus === 'CONNECTED'
+                        ? 'bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer active:scale-97'
+                        : 'bg-slate-100 text-slate-400 cursor-not-allowed'
+                    }`}
+                  >
+                    {isVerifyingWA ? (
+                      <>
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        <span>Verifying...</span>
+                      </>
+                    ) : (
+                      <>
+                        <MessageCircle className="w-3.5 h-3.5" />
+                        <span>Verify WA ({businesses.filter(b => b.whatsAppStatus === 'UNVERIFIED').length})</span>
+                      </>
+                    )}
+                  </button>
+
+                  <button
+                    id="export-csv-btn"
+                    onClick={exportToCSV}
+                    className="bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold px-3.5 py-2 rounded-xl text-xs flex items-center space-x-1.5 active:scale-97 transition-all border border-slate-200/40 shadow-xs"
+                    title="Download fully optimized CSV compatible with immediate Google Sheets import"
+                  >
+                    <Download className="w-3.5 h-3.5 text-cyan-600" />
+                    <span>Download Google Sheets (All)</span>
+                  </button>
+
+                  <button
+                    id="export-excel-wa-btn"
+                    onClick={exportWhatsAppActiveToExcel}
+                    disabled={businesses.filter(b => b.whatsAppStatus === 'ON_WHATSAPP').length === 0}
+                    className={`px-3.5 py-2 rounded-xl text-xs font-bold flex items-center space-x-1.5 transition-all outline-none ${
+                      businesses.filter(b => b.whatsAppStatus === 'ON_WHATSAPP').length > 0
+                        ? 'bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer active:scale-97 shadow-md shadow-emerald-100/45'
+                        : 'bg-slate-100 text-slate-400 cursor-not-allowed border border-slate-200/50'
+                    }`}
+                    title="Download only validated active WhatsApp profiles formatted perfectly for Google Sheets import"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    <span>Download Google Sheets (WhatsApp Active)</span>
+                  </button>
+
+                  <button
+                    id="clear-all-btn"
+                    onClick={() => setBusinesses([])}
+                    className="bg-rose-50 hover:bg-rose-100 text-rose-600 font-bold p-2 rounded-xl text-xs flex items-center justify-center hover:scale-105 transition-all"
+                    title="Clear collection"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+
+          {error && (
+            <div className="p-4 bg-rose-50 border border-rose-100 text-rose-900 rounded-xl text-sm flex items-start space-x-3 shadow-xs">
+              <AlertCircle className="w-5 h-5 text-rose-600 shrink-0 mt-0.5" />
+              <div>
+                <h4 className="font-bold">Execution Error</h4>
+                <p className="text-rose-700 text-xs mt-0.5 leading-normal">{error}</p>
+              </div>
+            </div>
+          )}
+
+          {/* Business Listing Canvas */}
+          <div className="bg-white rounded-2xl border border-slate-100 shadow-xs flex-1 flex flex-col min-h-[450px]">
+            <div className="px-5 py-4 border-b border-slate-50 flex items-center justify-between">
+              <h3 className="font-bold text-slate-900">Collected B2B Directories</h3>
+              {businesses.length > 0 && (
+                <span className="text-xs text-slate-400 font-bold tracking-tight">
+                  Displaying {businesses.length} items
+                </span>
+              )}
+            </div>
+
+            <div className="p-4 flex-1 overflow-y-auto max-h-[600px] space-y-3">
+              {businesses.length === 0 ? (
+                <div className="h-full flex flex-col items-center justify-center text-center py-20 px-4">
+                  <div className="h-16 w-16 bg-slate-50 border border-slate-100 rounded-2xl flex items-center justify-center text-slate-400 mb-4 shadow-xs">
+                    <Search className="w-6 h-6" />
+                  </div>
+                  <h4 className="font-extrabold text-slate-900 text-base">Workspace is Empty</h4>
+                  <p className="text-xs text-slate-400 max-w-sm mt-1 leading-normal">
+                    Use the query filters on the left to discover real locksmiths, restaurants, tree services, or other high utility categories in key global zones.
+                  </p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+                  <AnimatePresence>
+                    {businesses.map((biz) => {
+                      const isEditing = editingBizId === biz.id;
+                      return (
+                        <motion.div
+                          key={biz.id}
+                          layout
+                          initial={{ opacity: 0, y: 10 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          exit={{ opacity: 0, scale: 0.95 }}
+                          transition={{ duration: 0.2 }}
+                          className={`bg-white border rounded-xl p-4 flex flex-col justify-between shadow-xs hover:shadow-md transition-all duration-200 relative group min-h-[175px] ${
+                            isEditing ? 'border-cyan-500 ring-2 ring-cyan-500/15' : 'border-slate-150 hover:bg-slate-50 hover:border-slate-300'
+                          }`}
+                        >
+                          {isEditing ? (
+                            <div className="space-y-3 w-full">
+                              <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+                                <span className="text-[10px] bg-cyan-50 text-cyan-700 font-extrabold uppercase px-2 py-0.5 rounded tracking-wide border border-cyan-100">
+                                  Editing Lead Details
+                                </span>
+                                <span className="text-[10px] text-slate-400 font-bold">{biz.location}</span>
+                              </div>
+                              <div className="space-y-2">
+                                <div>
+                                  <label className="block text-[9px] font-extrabold text-slate-400 uppercase tracking-wider mb-0.5">Business Name</label>
+                                  <input
+                                    type="text"
+                                    value={editName}
+                                    onChange={(e) => setEditName(e.target.value)}
+                                    className="w-full bg-slate-50 border border-slate-250 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-slate-900 focus:outline-none focus:ring-1 focus:ring-cyan-500 focus:bg-white"
+                                  />
+                                </div>
+                                <div>
+                                  <label className="block text-[9px] font-extrabold text-slate-400 uppercase tracking-wider mb-0.5">Phone Number (include Country Code)</label>
+                                  <input
+                                    type="text"
+                                    value={editPhone}
+                                    onChange={(e) => setEditPhone(e.target.value)}
+                                    placeholder="e.g. +14155552671"
+                                    className="w-full bg-slate-50 border border-slate-250 rounded-lg px-2.5 py-1.5 text-xs font-mono font-bold text-slate-900 focus:outline-none focus:ring-1 focus:ring-cyan-500 focus:bg-white"
+                                  />
+                                </div>
+                                <div>
+                                  <label className="block text-[9px] font-extrabold text-slate-400 uppercase tracking-wider mb-0.5">Website</label>
+                                  <input
+                                    type="text"
+                                    value={editWebsite}
+                                    onChange={(e) => setEditWebsite(e.target.value)}
+                                    placeholder="e.g. www.example.com"
+                                    className="w-full bg-slate-50 border border-slate-250 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-slate-900 focus:outline-none focus:ring-1 focus:ring-cyan-500 focus:bg-white"
+                                  />
+                                </div>
+                                <div>
+                                  <label className="block text-[9px] font-extrabold text-slate-400 uppercase tracking-wider mb-0.5">Full Physical Location / Address</label>
+                                  <input
+                                    type="text"
+                                    value={editLocation}
+                                    onChange={(e) => setEditLocation(e.target.value)}
+                                    placeholder="e.g. 123 Broadway Main Road, New York, NY 10001"
+                                    className="w-full bg-slate-50 border border-slate-250 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-slate-900 focus:outline-none focus:ring-1 focus:ring-cyan-500 focus:bg-white"
+                                  />
+                                </div>
+                              </div>
+                              <div className="flex items-center space-x-2 pt-2 border-t border-slate-100">
+                                <button
+                                  onClick={() => saveEdit(biz.id)}
+                                  className="bg-cyan-600 hover:bg-cyan-700 text-white font-bold px-3 py-1.5 rounded-lg text-xs cursor-pointer active:scale-95 transition-all shadow-xs"
+                                >
+                                  Save Lead
+                                </button>
+                                <button
+                                  onClick={() => setEditingBizId(null)}
+                                  className="bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold px-3 py-1.5 rounded-lg text-xs cursor-pointer active:scale-95 transition-all"
+                                >
+                                  Cancel
+                                </button>
+                              </div>
+                            </div>
+                          ) : (
+                            <>
+                              <div>
+                                <div className="flex items-start justify-between">
+                                  <div>
+                                    <div className="flex items-center space-x-1.5 flex-wrap gap-y-1">
+                                      <span className="text-[10px] bg-slate-100 text-slate-600 font-extrabold uppercase px-2 py-0.5 rounded tracking-wide">
+                                        {biz.category}
+                                      </span>
+                                      {biz.isSimulated && (
+                                        <span className="text-[10px] bg-amber-50/70 text-amber-700 font-bold uppercase px-2 py-0.5 rounded tracking-wide border border-amber-100">
+                                          Simulated Fallback
+                                        </span>
+                                      )}
+                                    </div>
+                                    <h4 className="font-extrabold text-slate-900 mt-1.5 text-sm line-clamp-1 leading-tight pr-14">
+                                      <a
+                                        href={biz.mapsUrl || `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${biz.name} ${biz.location}`)}`}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="hover:text-cyan-600 hover:underline inline-flex items-center gap-1 cursor-pointer transition-all duration-150"
+                                        title={`Open "${biz.name}" on Google Maps`}
+                                      >
+                                        <span>{biz.name}</span>
+                                        <ExternalLink className="w-3 h-3 text-slate-400 shrink-0" />
+                                      </a>
+                                    </h4>
+                                    <p className="text-xs text-slate-400 font-medium mt-0.5 flex items-center gap-1">
+                                      {biz.location}
+                                    </p>
+                                  </div>
+                                  
+                                  <div className="flex items-center space-x-1 absolute top-3.5 right-3.5 opacity-0 group-hover:opacity-100 transition-all">
+                                    <button
+                                      onClick={() => startEditing(biz)}
+                                      className="text-slate-500 hover:text-cyan-600 p-1.5 rounded-lg bg-white border border-slate-100 shadow-2xs hover:scale-105 active:scale-95 cursor-pointer transition-all"
+                                      title="Edit Details"
+                                    >
+                                      <Edit className="w-3.5 h-3.5" />
+                                    </button>
+                                    <button
+                                      onClick={() => deleteBusiness(biz.id)}
+                                      className="text-slate-400 hover:text-rose-600 p-1.5 rounded-lg bg-white border border-slate-100 shadow-2xs hover:scale-105 active:scale-95 cursor-pointer transition-all"
+                                      title="Delete Lead"
+                                    >
+                                      <Trash2 className="w-3.5 h-3.5" />
+                                    </button>
+                                  </div>
+                                </div>
+
+                                {/* Ratings info */}
+                                <div className="flex items-center space-x-1.5 mt-2.5">
+                                  <div className="flex items-center text-amber-500">
+                                    <Star className="w-3 h-3 fill-current" />
+                                    <span className="text-xs font-black ml-0.5">{biz.rating.toFixed(1)}</span>
+                                  </div>
+                                  <span className="text-slate-300">|</span>
+                                  <span className="text-xs text-slate-400">{biz.reviewCount || 0} reviews</span>
+                                  <span className="text-xs bg-cyan-50 text-cyan-700 px-1.5 py-0.5 rounded border border-cyan-100/50 transform scale-90 font-bold">
+                                    Trustpilot
+                                  </span>
+                                </div>
+                              </div>
+
+                              {/* Contact details & validation status */}
+                              <div className="mt-4 border-t border-slate-100 pt-3 flex items-center justify-between text-xs">
+                                <div className="space-y-1">
+                                  {biz.phone ? (
+                                    <div className="flex items-center text-slate-600 font-medium">
+                                      <Phone className="w-3.5 h-3.5 text-slate-400 shrink-0 mr-1.5" />
+                                      <span className="font-mono">{biz.phone}</span>
+                                    </div>
+                                  ) : (
+                                    <div className="text-slate-300 italic">No Phone Number</div>
+                                  )}
+                                  
+                                  {biz.website && (
+                                    <a 
+                                      href={biz.website.startsWith('http') ? biz.website : `https://${biz.website}`} 
+                                      target="_blank" 
+                                      rel="noopener noreferrer" 
+                                      className="flex items-center text-cyan-600 hover:text-cyan-800 font-semibold"
+                                    >
+                                      <ExternalLink className="w-3.5 h-3.5 mr-1.5 shrink-0" />
+                                      <span className="truncate max-w-[140px]">{biz.website.replace(/(^\w+:|^)\/\/(www\.)?/, '')}</span>
+                                    </a>
+                                  )}
+                                </div>
+
+                                {/* Status Badge */}
+                                <div>
+                                  {biz.whatsAppStatus === 'UNVERIFIED' && (
+                                    <span className="bg-slate-100 text-slate-500 font-bold px-2 py-1 rounded-lg text-[10px] tracking-wide border border-slate-200">
+                                      UNVERIFIED
+                                    </span>
+                                  )}
+                                  {biz.whatsAppStatus === 'VERIFYING' && (
+                                    <span className="bg-blue-50 text-blue-600 font-bold px-2 py-1 rounded-lg text-[10px] tracking-wide border border-blue-100 animate-pulse flex items-center space-x-1">
+                                      <Loader2 className="w-3 h-3 animate-spin" />
+                                      <span>CHECKING</span>
+                                    </span>
+                                  )}
+                                  {biz.whatsAppStatus === 'ON_WHATSAPP' && (
+                                    <a
+                                      href={`https://wa.me/${biz.phone.replace(/\D/g, '')}?text=${encodeURIComponent(`Hello ${biz.name},`)}`}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      className="bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white font-extrabold px-2.5 py-1.5 rounded-lg text-[10px] tracking-wide border border-emerald-500/30 flex items-center space-x-1 font-sans cursor-pointer transition-all duration-150 shadow-xs"
+                                      title="Open WhatsApp Chat"
+                                    >
+                                      <MessageCircle className="w-3.5 h-3.5 fill-current" />
+                                      <span>WA ACTIVE (CHAT)</span>
+                                    </a>
+                                  )}
+                                  {biz.whatsAppStatus === 'NOT_ON_WHATSAPP' && (
+                                    <span className="bg-rose-50 text-rose-600 font-bold px-2 py-1 rounded-lg text-[10px] tracking-wide border border-rose-100 flex items-center space-x-1">
+                                      <XCircle className="w-3 h-3 text-rose-400" />
+                                      <span>NO WA</span>
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                            </>
+                          )}
+                        </motion.div>
+                      );
+                    })}
+                  </AnimatePresence>
+                </div>
+              )}
+            </div>
+            
+            {businesses.length > 0 && wpStatus !== 'CONNECTED' && (
+              <div className="px-5 py-3.5 bg-slate-50 border-t border-slate-100 text-xs text-slate-500 flex items-center space-x-2">
+                <Info className="w-3.5 h-3.5 text-cyan-600 shrink-0" />
+                <span>Hook up your WhatsApp socket on the left panel to execute automatic status verification.</span>
+              </div>
+            )}
+          </div>
+        </section>
+
       </main>
     </div>
-  );
-};
-
-export default function App() {
-  return (
-    <ErrorWrapper>
-      <AppContent />
-    </ErrorWrapper>
   );
 }

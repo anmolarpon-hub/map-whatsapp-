@@ -50,10 +50,9 @@ async function connectToWhatsApp(phoneToMatch?: string) {
       auth: state,
       printQRInTerminal: false,
       logger: silentLogger,
-      browser: ["Chrome (Linux)", "", ""], // Critical prefix for pairing code to prevent 400 bad request / stream error 515
+      browser: ["Ubuntu", "Chrome", "110.0.5563.147"], // Standard modern browser tuple for stability
     });
 
-    // If a phone is provided and the app is not already authenticated, request a pairing code
     const phoneNum = phoneToMatch || lastPhoneToMatch;
     if (phoneNum && !sock.authState.creds.registered) {
       setTimeout(async () => {
@@ -64,14 +63,14 @@ async function connectToWhatsApp(phoneToMatch?: string) {
             pairingCode = code;
             connectionStatus = "PAIRING_READY";
             lastWpError = null;
-            console.log(`Pairing code generated successfully: ${code}`);
+            console.log(`Pairing code generated: ${code}`);
           }
         } catch (err: any) {
           console.error("Failed to request pairing code:", err);
           lastWpError = `Failed to generate code: ${err.message || String(err)}`;
           connectionStatus = "DISCONNECTED";
         }
-      }, 5000); // 5000ms delay to ensure connection transport has stabilized
+      }, 5000);
     }
 
     sock.ev.on("connection.update", async (update: any) => {
@@ -97,16 +96,16 @@ async function connectToWhatsApp(phoneToMatch?: string) {
         qrText = null;
         
         if (!loggedOut) {
-          console.log(`Connection closed (code: ${errorStatusCode}), attempting reconnect in 3s...`);
+          console.log(`Connection closed (code: ${errorStatusCode}), attempting reconnect...`);
           connectionStatus = activePhone ? "PAIRING_READY" : "CONNECTING";
-          lastWpError = "Connection temporarily interrupted. Reconnecting...";
+          lastWpError = "Interrupted. Reconnecting...";
           setTimeout(() => connectToWhatsApp(activePhone || undefined), 3000);
         } else {
-          console.log("Logged out from WhatsApp. Purging session folder...");
+          console.log("Logged out from WhatsApp. Purging session...");
           connectionStatus = "DISCONNECTED";
           pairingCode = null;
           lastPhoneToMatch = null;
-          lastWpError = "Logged out from WhatsApp successfully.";
+          lastWpError = "Logged out successfully.";
           try {
             if (fs.existsSync(authFolder)) {
               fs.rmSync(authFolder, { recursive: true, force: true });
@@ -117,7 +116,7 @@ async function connectToWhatsApp(phoneToMatch?: string) {
           sock = null;
         }
       } else if (connection === "open") {
-        console.log("WhatsApp Web Client successfully handshaked and connected!");
+        console.log("WhatsApp Web Client successfully connected!");
         connectionStatus = "CONNECTED";
         qrCodeImage = null;
         qrText = null;
@@ -135,14 +134,14 @@ async function connectToWhatsApp(phoneToMatch?: string) {
   }
 }
 
-// Automatically try to resume connection if session exists
+// Automatically resume connection if session exists
 try {
   if (fs.existsSync(authFolder) && fs.readdirSync(authFolder).length > 2) {
-    console.log("Found existing WhatsApp session files. Resuming connection...");
+    console.log("Found existing WhatsApp session files. Resuming...");
     connectToWhatsApp().catch(err => console.error("Auto connection resumption failed:", err));
   }
 } catch (e) {
-  console.warn("No prior session folder detected or unable to read it.");
+  console.warn("No prior session folder detected.");
 }
 
 router.get("/status", (req, res) => {
@@ -169,8 +168,6 @@ router.post("/start", async (req, res) => {
     }
   }
 
-  // To guarantee a flawless and clean connection attempt, close the existing socket 
-  // and delete any stale/partially initialized session folder files first.
   if (sock) {
     try {
       sock.end();
@@ -198,75 +195,145 @@ router.post("/start", async (req, res) => {
 });
 
 router.post("/logout", async (req, res) => {
-  try {
-    if (sock) {
-      try {
-        await sock.logout();
-      } catch (e) {}
-      try {
-        sock.end();
-      } catch (e) {}
-      sock = null;
-    }
-    
-    connectionStatus = "DISCONNECTED";
-    qrCodeImage = null;
-    qrText = null;
-
+  if (sock) {
     try {
-      if (fs.existsSync(authFolder)) {
-        fs.rmSync(authFolder, { recursive: true, force: true });
-      }
-    } catch (e) {
-      console.error("Failed to remove auth info folder on logout route", e);
-    }
-
-    res.json({ success: true, message: "Logged out successfully" });
-  } catch (err: any) {
-    res.status(500).json({ success: false, error: err.message || String(err) });
+      sock.logout();
+    } catch (e) {}
+    try {
+      sock.end();
+    } catch (e) {}
+    sock = null;
   }
+  
+  connectionStatus = "DISCONNECTED";
+  qrCodeImage = null;
+  qrText = null;
+  pairingCode = null;
+  lastPhoneToMatch = null;
+  lastWpError = "Logged out successfully.";
+
+  try {
+    if (fs.existsSync(authFolder)) {
+      fs.rmSync(authFolder, { recursive: true, force: true });
+    }
+  } catch (e) {
+    console.error("Failed to purge session folder on logout:", e);
+  }
+  
+  res.json({ success: true, message: "Logged out from WhatsApp." });
 });
 
-router.post("/check", async (req, res) => {
-  const { phone } = req.body;
-  if (!phone) {
-    return res.status(400).json({ success: false, error: "Phone number is required" });
+// Helper to normalize phone number based on expected Country
+function normalizeVerifyPhone(phone: string, country: string): string {
+  if (!phone) return "";
+  let cleaned = phone.replace(/[^\d+]/g, '');
+  if (!cleaned) return "";
+
+  // Map country name to dial code
+  const countryLower = country.toLowerCase();
+  let dial = "";
+  if (countryLower.includes("bangladesh") || countryLower.includes("bd")) {
+    dial = "880";
+  } else if (countryLower.includes("united kingdom") || countryLower.includes("uk") || countryLower.includes("gb")) {
+    dial = "44";
+  } else if (countryLower.includes("australia") || countryLower.includes("au")) {
+    dial = "61";
+  } else if (countryLower.includes("india") || countryLower.includes("in")) {
+    dial = "91";
+  } else if (countryLower.includes("united arab emirates") || countryLower.includes("dubai") || countryLower.includes("uae") || countryLower.includes("ae")) {
+    dial = "971";
+  } else if (countryLower.includes("saudi arabia") || countryLower.includes("saudi") || countryLower.includes("ksa") || countryLower.includes("sa")) {
+    dial = "966";
+  } else if (countryLower.includes("germany") || countryLower.includes("de")) {
+    dial = "49";
+  } else if (countryLower.includes("canada") || countryLower.includes("ca")) {
+    dial = "1";
+  } else if (countryLower.includes("united states") || countryLower.includes("usa") || countryLower.includes("us")) {
+    dial = "1";
+  } else {
+    dial = "1"; // Default fallback
   }
 
-  if (!sock || connectionStatus !== "CONNECTED") {
-    return res.status(400).json({ success: false, error: "WhatsApp is not connected to any device. Please scan the QR code." });
+  // If phone starts with "+", keep it (but remove "+")
+  if (cleaned.startsWith("+")) {
+    cleaned = cleaned.slice(1);
   }
 
-  try {
-    const cleanPhone = phone.replace(/[^\d]/g, "");
-    if (!cleanPhone) {
-      return res.status(400).json({ success: false, error: "Invalid phone number format." });
-    }
-
-    const resList = await sock.onWhatsApp(cleanPhone);
-    if (resList && resList.length > 0) {
-      const match = resList[0];
-      return res.json({
-        success: true,
-        exists: match.exists,
-        jid: match.jid,
-      });
-    }
-
-    return res.json({
-      success: true,
-      exists: false,
-      reason: "No WhatsApp profile registered for this number"
-    });
-  } catch (err: any) {
-    console.error(`onWhatsApp failed for phone: ${phone}:`, err);
-    return res.json({
-      success: true,
-      exists: false,
-      error: err.message || String(err),
-      reason: "Verification failed or timed out"
-    });
+  // If phone starts with "00", replace with empty
+  if (cleaned.startsWith("00")) {
+    cleaned = cleaned.slice(2);
   }
+
+  // If it starts with country dial code followed by "0", strip the "0" (e.g. UK +44074... -> +4474...)
+  if (dial && cleaned.startsWith(dial + "0") && cleaned.length > dial.length + 5) {
+    cleaned = dial + cleaned.slice(dial.length + 1);
+  } else if (cleaned.startsWith("0") && cleaned.length > 5) {
+    // Handle local prefix "0" (common in UK, Aus, BD, India)
+    cleaned = cleaned.slice(1);
+    cleaned = dial + cleaned;
+  } else if (dial && !cleaned.startsWith(dial)) {
+    // If it lacks country code, prepend it
+    cleaned = dial + cleaned;
+  }
+
+  return cleaned;
+}
+
+// Verify numbers on WhatsApp with concurrent chunk processing and robust normalization
+router.post("/verify", async (req, res) => {
+  if (connectionStatus !== "CONNECTED" || !sock) {
+    return res.status(400).json({ success: false, error: "WhatsApp is not connected. Please hook up your WhatsApp account first." });
+  }
+
+  const { phones, country } = req.body;
+  if (!Array.isArray(phones)) {
+    return res.status(400).json({ success: false, error: "phones must be an array of phone strings." });
+  }
+
+  const targetCountry = country || "United States";
+  const results: Record<string, { hasWhatsApp: boolean; exists?: boolean; jid?: string; premiumStatus?: string }> = {};
+
+  // Process in chunks of 10 to keep it blazing fast while protecting the socket connection
+  const batchSize = 10;
+  for (let i = 0; i < phones.length; i += batchSize) {
+    const chunk = phones.slice(i, i + batchSize);
+    await Promise.all(chunk.map(async (phone) => {
+      try {
+        const cleanPhone = normalizeVerifyPhone(phone, targetCountry);
+        if (!cleanPhone) {
+          results[phone] = { hasWhatsApp: false };
+          return;
+        }
+
+        // 1. Try with explicit JID suffix (Standard Baileys spec)
+        const onWa = await sock.onWhatsApp(cleanPhone + "@s.whatsapp.net");
+        if (onWa && onWa.length > 0 && onWa[0].exists) {
+          results[phone] = {
+            hasWhatsApp: true,
+            exists: true,
+            jid: onWa[0].jid
+          };
+        } else {
+          // 2. Fallback check with digits only
+          const onWaBackup = await sock.onWhatsApp(cleanPhone);
+          if (onWaBackup && onWaBackup.length > 0 && onWaBackup[0].exists) {
+            results[phone] = {
+              hasWhatsApp: true,
+              exists: true,
+              jid: onWaBackup[0].jid
+            };
+          } else {
+            results[phone] = { hasWhatsApp: false };
+          }
+        }
+      } catch (err: any) {
+        console.warn(`Error verifying number ${phone}:`, err);
+        results[phone] = { hasWhatsApp: false };
+      }
+    }));
+  }
+
+  res.json({ success: true, results });
 });
 
 export default router;
